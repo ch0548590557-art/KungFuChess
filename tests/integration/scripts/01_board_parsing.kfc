@@ -1,0 +1,8 @@
+Board
+. . .
+. wK .
+. . .
+print board
+. . .
+. wK .
+. . .
