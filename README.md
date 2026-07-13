@@ -1,4 +1,4 @@
-# Kung Fu Chess — Iteration 10 (Final Iteration) Deliverable
+# Kung Fu Chess — (Final Iteration) Deliverable
 
 This is the **only-the-last-iteration** deliverable: the fully layered
 architecture from the design guide (Sections 4–12), hardened, tested, and
