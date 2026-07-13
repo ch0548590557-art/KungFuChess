@@ -73,7 +73,7 @@ tests/
 | `Renderer` | View Adapter | Receives read-only `GameSnapshot`, never live `Board`/`Piece` |
 | `ScriptRunner` | Command-script test harness | Always drives the real public path (Controller → GameEngine), the "forbidden shortcut" (calling `Board.move_piece` directly) is never used |
 
-## Iteration 10 / extra-route feature: simultaneous movement
+##  / extra-route feature: simultaneous movement
 
 Full **architecture impact note** (affected layers, new state, public API
 impact, required tests, unchanged layers) lives at the top of
