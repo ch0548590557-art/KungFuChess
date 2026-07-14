@@ -53,6 +53,7 @@ from kungfu_chess.model.position import Position
 from kungfu_chess.model.board import Board
 from kungfu_chess.model.game_state import GameState
 from kungfu_chess.rules.rule_engine import RuleEngine
+from kungfu_chess.rules import promotion_rules
 from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
 import kungfu_chess.config as config
 
@@ -99,17 +100,35 @@ class GameEngine:
         return MoveResult(True, "ok")
 
     def request_jump(self, source: Position) -> MoveResult:
+        """Extra-route "Jump" ability: a piece becomes airborne on its own
+        cell for config.JUMP_DURATION_MS (see RealTimeArbiter.start_jump).
+
+        WHY THIS SKIPS RuleEngine ENTIRELY, UNLIKE request_move:
+        RuleEngine.validate_move answers "is this a legal *destination* for
+        this piece's geometry" (Section 8) - but a jump has no destination
+        to validate; it always targets the piece's own current cell. There
+        is no chess-geometry question to ask, so involving RuleEngine here
+        would mean inventing a fake destination just to satisfy an API that
+        doesn't apply. The two guards that DO still apply are exactly the
+        application-level ones request_move also checks first, in the same
+        order, for the same reason (Section 8: RuleEngine doesn't know
+        about game_over; a piece already mid-motion can't start another):
+        game_over, then can_start_motion. Reusing can_start_motion (rather
+        than a parallel can_start_jump) also means Rule 5 ("a moving piece
+        cannot jump") and "a piece already jumping cannot jump again" are
+        both enforced for free - a JUMP is stored as a Motion like any
+        other, so a piece with one already active fails this same check.
+        """
         if self._state.game_over:
             return MoveResult(False, "game_over")
 
         piece = self._board.piece_at(source)
         if piece is None:
             return MoveResult(False, "empty_cell")
-
         if not self._arbiter.can_start_motion(piece.id):
             return MoveResult(False, "motion_in_progress")
 
-        self._arbiter.start_jump(piece, self._clock_ms, self._clock_ms)
+        self._arbiter.start_jump(piece, self._clock_ms)
         return MoveResult(True, "ok")
 
     def wait(self, ms: int) -> None:
@@ -122,13 +141,31 @@ class GameEngine:
             self._maybe_promote(event)
 
     def _maybe_promote(self, event) -> None:
-       
+        """Pawn promotion is an *arrival-time* consequence (Section 10's
+        pattern for king-capture applies equally here): RealTimeArbiter
+        only knows about generic motion/capture bookkeeping - it has no
+        idea what a pawn or a queen is. GameEngine is the layer allowed to
+        know "this arrived" (from the ArrivalEvent), so promotion is
+        *checked* right next to the king-capture check that already lives
+        here for the same reason.
+
+        WHAT it promotes into - and whether promotion happens at all - is
+        deliberately NOT decided here: that's rules/promotion_rules.py's
+        job, the same way RuleEngine defers "where can this piece go" to
+        piece_rules.PIECE_RULES instead of hard-coding rook geometry
+        inline. GameEngine's only remaining responsibility is *timing*
+        ("check after every arrival"); a policy change (disable
+        promotion, promote to a different kind, add a second promotable
+        piece type) is a config.py / promotion_rules.py edit, never a
+        GameEngine edit.
+        """
         piece = self._board.piece_by_id(event.piece_id)
-        if piece is None or piece.kind != config.PAWN:
+        if piece is None:
             return
-        last_rank = 0 if piece.color == 'w' else self._board.height - 1
-        if piece.cell.row == last_rank:
-            piece.kind = config.QUEEN
+        target_kind = promotion_rules.promotion_target(self._board, piece)
+        if target_kind is not None:
+            piece.kind = target_kind
+
     def snapshot(self) -> GameSnapshot:
         pieces = [
             (p.kind, p.color, p.cell.row, p.cell.col, p.state.name)

@@ -69,6 +69,9 @@ class ScriptRunner:
             elif kind == "click":
                 controller.click(command[1], command[2])
 
+            elif kind == "jump":
+                controller.jump(command[1], command[2])
+
             elif kind == "wait":
                 engine.wait(command[1])
 

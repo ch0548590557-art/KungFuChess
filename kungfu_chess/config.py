@@ -28,4 +28,27 @@ VALID_COLORS = {'w', 'b'}
 # the codebase needs to change to move between common-route and
 # extra-route concurrency behaviour. See RealTimeArbiter.
 MAX_CONCURRENT_MOTIONS = None
+
+# --- Extra route: "Jump" (airborne / untouchable-window ability) ----------
+# How long (ms) a piece stays airborne after jumping before it lands back
+# on its own cell. A single constant here (rather than hard-coding 1000 in
+# RealTimeArbiter) keeps the "how long is the jump window" decision in the
+# same one place as every other timing knob (CELL_SIZE_PX,
+# PIECE_SPEED_PX_PER_SEC above), so tuning it later never means hunting
+# through realtime/real_time_arbiter.py.
 JUMP_DURATION_MS = 1000
+
+# --- Promotion policy (Section 10 arrival-time effect) ---------------------
+# Mirrors the same "one config switch, zero code-path branching" approach as
+# MAX_CONCURRENT_MOTIONS above: PROMOTION_ENABLED turns the whole feature
+# off without touching GameEngine/rules code, and PROMOTION_TARGETS is a
+# dict dispatch (same Strategy-pattern shape as PIECE_RULES in
+# rules/piece_rules.py) mapping "a piece of this kind, upon reaching the far
+# rank, becomes a piece of that kind". A kind with no entry here simply
+# never promotes - so disabling promotion for one piece type, or adding a
+# second promotable piece type, or changing what a pawn promotes into, are
+# all one-line edits here and nowhere else.
+PROMOTION_ENABLED = True
+PROMOTION_TARGETS = {
+    PAWN: QUEEN,
+}

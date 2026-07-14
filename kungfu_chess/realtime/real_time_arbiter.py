@@ -21,7 +21,6 @@ before coding):
       a second motion while it is already moving. Two *different* pieces
       moving at the same time is now allowed.
 
-      
   New state required:
     - None beyond what RealTimeArbiter already needed for the common
       route (a list of Motion, not a single Optional[Motion]). The only
@@ -71,13 +70,12 @@ constructor parameter, with zero new code paths - can_start_motion() has
 exactly one branch that reads the limit, not one branch per mode.
 """
 
-from typing import List, Optional, Set
+from typing import List, Optional
 
 from kungfu_chess.model.position import Position
 from kungfu_chess.model.board import Board
 from kungfu_chess.model.piece import Piece, PieceState
 from kungfu_chess.realtime.motion import Motion, ArrivalEvent, MotionKind
-from kungfu_chess.realtime.collision_resolver import CollisionResolver
 import kungfu_chess.config as config
 
 _CELL_DURATION_MS = int(
@@ -110,111 +108,107 @@ class RealTimeArbiter:
 
     # ---- mutation ------------------------------------------------------
 
-    def start_motion(self, piece: Piece, destination: Position, now_ms: int,
-                     action_kind: str = MotionKind.MOVE) -> None:
-        if action_kind == MotionKind.JUMP:
-            duration_ms = config.JUMP_DURATION_MS
-        else:
-            steps = max(abs(destination.row - piece.cell.row),
-                        abs(destination.col - piece.cell.col))
-            duration_ms = steps * _CELL_DURATION_MS
+    def start_motion(self, piece: Piece, destination: Position, now_ms: int) -> None:
+        steps = max(abs(destination.row - piece.cell.row),
+                    abs(destination.col - piece.cell.col))
+        duration_ms = steps * _CELL_DURATION_MS
 
-        motion = Motion(
+        self._active_motions.append(Motion(
             piece_id=piece.id,
             source=piece.cell,
             destination=destination,
             start_time_ms=now_ms,
             arrival_time_ms=now_ms + duration_ms,
-            action_kind=action_kind,
-        )
+        ))
+        piece.state = PieceState.MOVING
 
-        self._active_motions.append(motion)
-
-        if action_kind == MotionKind.JUMP:
-            piece.state = PieceState.JUMPING
-        else:
-            piece.state = PieceState.MOVING
-
-    def start_jump(self, piece: Piece, now_ms: int, board: Board) -> None:
-        board.detach_piece(piece.cell)
-        self.start_motion(piece, piece.cell, now_ms, action_kind=MotionKind.JUMP)
+    def start_jump(self, piece: Piece, now_ms: int) -> None:
+        """Extra-route "Jump" ability: the piece stays on its own cell
+        (source == destination - it never actually travels anywhere) but
+        becomes untouchable for config.JUMP_DURATION_MS. This is stored
+        as an ordinary Motion in the same _active_motions list as WALK
+        motions (rather than a separate tracking structure) precisely so
+        it goes through the same can_start_motion() piece-scoped /
+        concurrency-capped gate, and the same advance_time() arrival loop,
+        as every other kind of travel - the only thing that varies is
+        `kind=MotionKind.JUMP`, which _resolve_arrival() below inspects to
+        decide how to resolve a collision at this piece's cell.
+        """
+        self._active_motions.append(Motion(
+            piece_id=piece.id,
+            source=piece.cell,
+            destination=piece.cell,
+            start_time_ms=now_ms,
+            arrival_time_ms=now_ms + config.JUMP_DURATION_MS,
+            kind=MotionKind.JUMP,
+        ))
+        piece.state = PieceState.JUMPING
 
     def advance_time(self, board: Board, target_time_ms: int) -> List[ArrivalEvent]:
         arrived = [m for m in self._active_motions if m.has_arrived_by(target_time_ms)]
-        arrived.sort(key=lambda m: (
-            m.arrival_time_ms,
-            0 if m.action_kind == MotionKind.JUMP else 1,
-            m.start_time_ms,
-        ))
+        # Tie-break same-tick arrivals so WALK motions resolve before JUMP
+        # motions: if a jump and an incoming walk both land at the exact
+        # same millisecond (as in the "airborne piece captures arriving
+        # enemy" fixture, where a 1-cell walk and a jump both take exactly
+        # config.JUMP_DURATION_MS / one cell-crossing), the jumping piece
+        # must still be JUMPING when the walk is resolved against it - if
+        # the jump resolved (and landed, reverting to IDLE) first, the
+        # airborne-defense rule below would never see it as airborne at
+        # all, purely because of insertion order rather than game logic.
+        arrived.sort(key=lambda m: (m.arrival_time_ms, m.kind is MotionKind.JUMP))
 
         still_active = [m for m in self._active_motions if not m.has_arrived_by(target_time_ms)]
 
-        arrivals, killed, canceled = CollisionResolver.resolve(arrived)
-        for motion in killed:
-            killed_piece = board.piece_by_id(motion.piece_id)
-            if killed_piece is not None:
-                board.remove_piece(killed_piece.cell)
-                killed_piece.state = PieceState.CAPTURED
-
-        for motion in canceled:
-            canceled_piece = board.piece_by_id(motion.piece_id)
-            if canceled_piece is not None:
-                canceled_piece.state = PieceState.IDLE
-
-        events: List[ArrivalEvent] = []
-        for motion in arrivals:
-            if board.piece_by_id(motion.piece_id) is None:
-                continue
-
-            event = self._resolve_arrival(board, motion, target_time_ms)
-            if event is not None:
-                events.append(event)
-            else:
-                still_active.append(motion)
+        events = [self._resolve_arrival(board, motion) for motion in arrived]
+        events = [event for event in events if event is not None]
 
         self._active_motions = still_active
         return events
 
-    def _resolve_arrival(self, board: Board, motion: Motion,
-                         target_time_ms: int) -> Optional[ArrivalEvent]:
+    def _resolve_arrival(self, board: Board, motion: Motion) -> Optional[ArrivalEvent]:
         piece = board.piece_by_id(motion.piece_id)
         if piece is None:
+            # This piece was captured by another motion that already
+            # resolved earlier in this same advance_time() batch (an
+            # airborne mid-flight collision, e.g. two pieces swapping
+            # squares and arriving at the same tick). Whichever motion
+            # is resolved first "wins"; this motion's piece no longer
+            # exists, so it simply vanishes instead of completing.
             return None
 
-        if motion.action_kind == MotionKind.JUMP:
-            captured = board.piece_at(motion.destination)
-            captured_id = None
-            captured_kind = None
-            if captured is not None:
-                if captured.color != piece.color:
-                    board.remove_piece(motion.destination)
-                    captured_id = captured.id
-                    captured_kind = captured.kind
-                else:
-                    # Same-color occupancy blocks landing. Retry on the next
-                    # time advance so the jumper stays airborne until the
-                    # square becomes available.
-                    motion.arrival_time_ms = target_time_ms + 1
-                    return None
+        defender = board.piece_at(motion.destination)
 
-            board.place_piece(piece)
-            piece.state = PieceState.IDLE
-
+        if (
+            defender is not None
+            and defender.id != piece.id
+            and defender.state is PieceState.JUMPING
+            and motion.kind is not MotionKind.JUMP
+        ):
+            # Extra-route "Jump" rule: an airborne (JUMPING) piece is
+            # immune to capture and instead captures whichever grounded
+            # WALK piece arrives at its cell during the jump window. The
+            # defender does not move and stays JUMPING - it will land
+            # normally later when its own jump Motion resolves. The
+            # arriving piece is removed from wherever Board currently has
+            # it recorded, which is always motion.source: Board only ever
+            # mutates occupancy on arrival (Section 10), so an in-flight
+            # WALK piece is still sitting at its source cell right up
+            # until this exact resolution.
+            board.remove_piece(motion.source)
             return ArrivalEvent(
-                piece_id=piece.id,
-                source=motion.source,
-                destination=motion.destination,
-                captured_piece_id=captured_id,
-                captured_kind=captured_kind,
+                piece_id=defender.id,
+                source=defender.cell,
+                destination=defender.cell,
+                captured_piece_id=piece.id,
+                captured_kind=piece.kind,
             )
 
-        captured = board.piece_at(motion.destination)
         captured_id = None
         captured_kind = None
-        if captured is not None and captured.id != piece.id:
+        if defender is not None and defender.id != piece.id:
             board.remove_piece(motion.destination)
-            captured_id = captured.id
-            captured_kind = captured.kind
+            captured_id = defender.id
+            captured_kind = defender.kind
 
         board.move_piece(motion.source, motion.destination)
         piece.state = PieceState.IDLE

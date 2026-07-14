@@ -32,6 +32,14 @@ statelessness is what makes them trivially unit-testable in isolation
 assert the returned set. No GameEngine, no RuleEngine, no fixtures beyond
 a Board.
 
+NOTE ON PAWNS: the pawn rule supports a first-move two-square advance
+(gated on Piece.has_moved) and ordinary diagonal captures. Promotion is
+NOT decided here - legal_destinations only answers "where can this piece
+go", and promotion is a consequence of *arriving* at the far rank, so it
+is applied where every other arrival-time effect (captures, king-capture
+detection) already lives: GameEngine.wait(), right after RealTimeArbiter
+reports an ArrivalEvent. En passant is still not implemented.
+
 WHY SLIDING PIECES SHARE A _slide() HELPER:
 Rook, Bishop and Queen differ only in *which directions* they slide, not
 in *how* sliding works (walk a direction, stop before/at the first
@@ -110,17 +118,47 @@ def _king_destinations(board, piece) -> Set[Position]:
     return destinations
 
 
+def _pawn_home_row(board: Board, color: str) -> int:
+    """The rank a pawn of this color starts on. White starts two rows up
+    from the bottom edge, black starts on row 1 (one row down from the
+    top edge) - this is symmetric and holds for any board height, which
+    is why it works across fixtures of very different sizes (2 rows,
+    4 rows, 5 rows, ...) without a hard-coded '6' or '1'."""
+    return board.height - 2 if color == 'w' else 1
+
+
 def _pawn_destinations(board, piece) -> Set[Position]:
-    """Simplified pawn (Section 7): one step forward only, no two-step
-    opening, no en passant, no promotion. Forward direction is derived
-    from color so this one function serves both colors."""
+    """Pawn (Section 7 extended): one step forward, or two steps forward
+    when the pawn is standing on its actual home rank (no en passant, no
+    other special moves). Forward direction is derived from color so
+    this one function serves both colors.
+
+    WHY THE DOUBLE-STEP GATE IS "ON THE HOME RANK" AND NOT "HAS NEVER
+    MOVED":
+    A pawn placed by a text fixture away from its home rank (e.g. one
+    row off, to specifically test this) has technically "never moved"
+    from the engine's point of view, but it was never entitled to a
+    double-step in the first place - the rule is about *where the pawn
+    is standing*, not merely whether GameEngine has moved it before.
+    Checking the actual home rank (via _pawn_home_row) gets this right
+    in both directions: a pawn dropped straight onto its home rank can
+    double-step, and a fresh pawn placed one row forward of it cannot -
+    which a "not piece.has_moved" check alone cannot distinguish, since
+    both pieces report has_moved=False.
+    """
     destinations = set()
     forward = -1 if piece.color == 'w' else 1
     r, c = piece.cell.row + forward, piece.cell.col
 
     forward_pos = Position(r, c)
-    if board.in_bounds(forward_pos) and board.is_empty(forward_pos):
+    forward_open = board.in_bounds(forward_pos) and board.is_empty(forward_pos)
+    if forward_open:
         destinations.add(forward_pos)
+
+        if piece.cell.row == _pawn_home_row(board, piece.color):
+            double_pos = Position(r + forward, c)
+            if board.in_bounds(double_pos) and board.is_empty(double_pos):
+                destinations.add(double_pos)
 
     for dc in (-1, 1):
         cap_pos = Position(r, c + dc)

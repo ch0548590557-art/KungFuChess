@@ -1,8 +1,8 @@
 """
 script_parser: raw .kfc text -> a list of (command, ...) tuples. This
-file is purely about DSL *syntax* (Section 13: exactly four commands:
-Board, click, wait, print board) - it has no idea what a "legal move" or
-a "piece" is, and never touches GameEngine.
+file is purely about DSL *syntax* (Section 13, extended for the Jump
+extra-route: Board, click, jump, wait, print board) - it has no idea what
+a "legal move" or a "piece" is, and never touches GameEngine.
 
 WHY PARSING IS A FREE FUNCTION HERE, SEPARATE FROM ScriptRunner:
 Splitting "understand the text" from "execute the commands" mirrors the
@@ -28,7 +28,8 @@ from typing import List, Tuple
 
 def _is_keyword_line(line: str) -> bool:
     s = line.strip()
-    return s == "Board" or s == "print board" or s.startswith("click ") or s.startswith("wait ")
+    return (s == "Board" or s == "print board"
+            or s.startswith("click ") or s.startswith("jump ") or s.startswith("wait "))
 
 
 def parse_script(text: str) -> List[Tuple]:
@@ -54,6 +55,11 @@ def parse_script(text: str) -> List[Tuple]:
         elif line.startswith("click "):
             _, x, y = line.split()
             commands.append(("click", int(x), int(y)))
+            i += 1
+
+        elif line.startswith("jump "):
+            _, x, y = line.split()
+            commands.append(("jump", int(x), int(y)))
             i += 1
 
         elif line.startswith("wait "):

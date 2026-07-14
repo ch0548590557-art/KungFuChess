@@ -31,15 +31,31 @@ shares stay in their own file so multiple layers can import just the
 shape without importing arbiter logic.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum, auto
 from typing import Optional
 
 from kungfu_chess.model.position import Position
 
 
-class MotionKind:
-    MOVE = "move"
-    JUMP = "jump"
+class MotionKind(Enum):
+    """WHY THIS EXISTS SEPARATELY FROM PieceState:
+    PieceState (IDLE/MOVING/CAPTURED/JUMPING) is a fact about the *piece*
+    - what a caller sees if it looks the piece up right now. MotionKind is
+    a fact about the *travel itself* - it tells RealTimeArbiter._resolve_
+    arrival() which resolution rules apply to this specific Motion when it
+    lands. A WALK arriving at a JUMPING defender's cell must be destroyed
+    instead of capturing (Jump extra-route rule); a JUMP "arriving" back
+    at its own owner's cell is always just a normal landing. Folding this
+    into PieceState instead would mean every check needs "is this piece's
+    state MOVING, and if so was the motion that produced it a walk or a
+    jump" - i.e. it would still need a second flag somewhere. Keeping the
+    two separate lets Piece answer "what am I right now" and Motion answer
+    "what kind of travel is this", without one having to reach into the
+    other's business.
+    """
+    WALK = auto()
+    JUMP = auto()
 
 
 @dataclass
@@ -50,7 +66,7 @@ class Motion:
     destination: Position
     start_time_ms: int
     arrival_time_ms: int
-    action_kind: str = MotionKind.MOVE
+    kind: MotionKind = field(default=MotionKind.WALK)
 
     def has_arrived_by(self, now_ms: int) -> bool:
         return now_ms >= self.arrival_time_ms

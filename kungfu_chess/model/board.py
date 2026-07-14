@@ -85,19 +85,6 @@ class Board:
             piece.state = PieceState.CAPTURED
         return piece
 
-    def detach_piece(self, pos: Position) -> Optional[Piece]:
-        piece = self._by_cell.pop(pos, None)
-        return piece
-
-    def place_piece(self, piece: Piece) -> None:
-        if piece.cell in self._by_cell:
-            raise DuplicateOccupancyError(
-                f"cell {piece.cell} already occupied"
-            )
-        self._by_cell[piece.cell] = piece
-        if piece.id not in self._by_id:
-            self._by_id[piece.id] = piece
-
     def move_piece(self, source: Position, destination: Position) -> None:
         """Relocates the piece at `source` to `destination`. Assumes the
         caller (GameEngine / RealTimeArbiter) already validated legality
@@ -105,6 +92,7 @@ class Board:
         moves state around, it never decides correctness."""
         piece = self._by_cell.pop(source)
         piece.cell = destination
+        piece.has_moved = True
         self._by_cell[destination] = piece
 
     def all_pieces(self):
