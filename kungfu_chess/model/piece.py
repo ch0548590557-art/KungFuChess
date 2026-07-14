@@ -45,6 +45,7 @@ from kungfu_chess.model.position import Position
 class PieceState(Enum):
     IDLE = auto()
     MOVING = auto()
+    JUMPING = auto()
     CAPTURED = auto()
 
 

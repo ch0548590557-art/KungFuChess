@@ -28,3 +28,4 @@ VALID_COLORS = {'w', 'b'}
 # the codebase needs to change to move between common-route and
 # extra-route concurrency behaviour. See RealTimeArbiter.
 MAX_CONCURRENT_MOTIONS = None
+JUMP_DURATION_MS = 1000

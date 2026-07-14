@@ -98,6 +98,20 @@ class GameEngine:
         self._arbiter.start_motion(piece, destination, self._clock_ms)
         return MoveResult(True, "ok")
 
+    def request_jump(self, source: Position) -> MoveResult:
+        if self._state.game_over:
+            return MoveResult(False, "game_over")
+
+        piece = self._board.piece_at(source)
+        if piece is None:
+            return MoveResult(False, "empty_cell")
+
+        if not self._arbiter.can_start_motion(piece.id):
+            return MoveResult(False, "motion_in_progress")
+
+        self._arbiter.start_jump(piece, self._clock_ms, self._clock_ms)
+        return MoveResult(True, "ok")
+
     def wait(self, ms: int) -> None:
         self._clock_ms += ms
         events = self._arbiter.advance_time(self._board, self._clock_ms)
@@ -105,7 +119,16 @@ class GameEngine:
             if event.captured_kind == config.KING:
                 capturer = self._board.piece_by_id(event.piece_id)
                 self._state.end_game(winner_color=capturer.color)
+            self._maybe_promote(event)
 
+    def _maybe_promote(self, event) -> None:
+       
+        piece = self._board.piece_by_id(event.piece_id)
+        if piece is None or piece.kind != config.PAWN:
+            return
+        last_rank = 0 if piece.color == 'w' else self._board.height - 1
+        if piece.cell.row == last_rank:
+            piece.kind = config.QUEEN
     def snapshot(self) -> GameSnapshot:
         pieces = [
             (p.kind, p.color, p.cell.row, p.cell.col, p.state.name)

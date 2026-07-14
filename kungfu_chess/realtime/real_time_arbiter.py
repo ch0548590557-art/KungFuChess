@@ -21,6 +21,7 @@ before coding):
       a second motion while it is already moving. Two *different* pieces
       moving at the same time is now allowed.
 
+      
   New state required:
     - None beyond what RealTimeArbiter already needed for the common
       route (a list of Motion, not a single Optional[Motion]). The only
@@ -70,12 +71,13 @@ constructor parameter, with zero new code paths - can_start_motion() has
 exactly one branch that reads the limit, not one branch per mode.
 """
 
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from kungfu_chess.model.position import Position
 from kungfu_chess.model.board import Board
 from kungfu_chess.model.piece import Piece, PieceState
-from kungfu_chess.realtime.motion import Motion, ArrivalEvent
+from kungfu_chess.realtime.motion import Motion, ArrivalEvent, MotionKind
+from kungfu_chess.realtime.collision_resolver import CollisionResolver
 import kungfu_chess.config as config
 
 _CELL_DURATION_MS = int(
@@ -108,33 +110,103 @@ class RealTimeArbiter:
 
     # ---- mutation ------------------------------------------------------
 
-    def start_motion(self, piece: Piece, destination: Position, now_ms: int) -> None:
-        steps = max(abs(destination.row - piece.cell.row),
-                    abs(destination.col - piece.cell.col))
-        duration_ms = steps * _CELL_DURATION_MS
+    def start_motion(self, piece: Piece, destination: Position, now_ms: int,
+                     action_kind: str = MotionKind.MOVE) -> None:
+        if action_kind == MotionKind.JUMP:
+            duration_ms = config.JUMP_DURATION_MS
+        else:
+            steps = max(abs(destination.row - piece.cell.row),
+                        abs(destination.col - piece.cell.col))
+            duration_ms = steps * _CELL_DURATION_MS
 
-        self._active_motions.append(Motion(
+        motion = Motion(
             piece_id=piece.id,
             source=piece.cell,
             destination=destination,
             start_time_ms=now_ms,
             arrival_time_ms=now_ms + duration_ms,
-        ))
-        piece.state = PieceState.MOVING
+            action_kind=action_kind,
+        )
+
+        self._active_motions.append(motion)
+
+        if action_kind == MotionKind.JUMP:
+            piece.state = PieceState.JUMPING
+        else:
+            piece.state = PieceState.MOVING
+
+    def start_jump(self, piece: Piece, now_ms: int, board: Board) -> None:
+        board.detach_piece(piece.cell)
+        self.start_motion(piece, piece.cell, now_ms, action_kind=MotionKind.JUMP)
 
     def advance_time(self, board: Board, target_time_ms: int) -> List[ArrivalEvent]:
         arrived = [m for m in self._active_motions if m.has_arrived_by(target_time_ms)]
-        arrived.sort(key=lambda m: m.arrival_time_ms)
+        arrived.sort(key=lambda m: (
+            m.arrival_time_ms,
+            0 if m.action_kind == MotionKind.JUMP else 1,
+            m.start_time_ms,
+        ))
 
         still_active = [m for m in self._active_motions if not m.has_arrived_by(target_time_ms)]
 
-        events = [self._resolve_arrival(board, motion) for motion in arrived]
+        arrivals, killed, canceled = CollisionResolver.resolve(arrived)
+        for motion in killed:
+            killed_piece = board.piece_by_id(motion.piece_id)
+            if killed_piece is not None:
+                board.remove_piece(killed_piece.cell)
+                killed_piece.state = PieceState.CAPTURED
+
+        for motion in canceled:
+            canceled_piece = board.piece_by_id(motion.piece_id)
+            if canceled_piece is not None:
+                canceled_piece.state = PieceState.IDLE
+
+        events: List[ArrivalEvent] = []
+        for motion in arrivals:
+            if board.piece_by_id(motion.piece_id) is None:
+                continue
+
+            event = self._resolve_arrival(board, motion, target_time_ms)
+            if event is not None:
+                events.append(event)
+            else:
+                still_active.append(motion)
 
         self._active_motions = still_active
         return events
 
-    def _resolve_arrival(self, board: Board, motion: Motion) -> ArrivalEvent:
+    def _resolve_arrival(self, board: Board, motion: Motion,
+                         target_time_ms: int) -> Optional[ArrivalEvent]:
         piece = board.piece_by_id(motion.piece_id)
+        if piece is None:
+            return None
+
+        if motion.action_kind == MotionKind.JUMP:
+            captured = board.piece_at(motion.destination)
+            captured_id = None
+            captured_kind = None
+            if captured is not None:
+                if captured.color != piece.color:
+                    board.remove_piece(motion.destination)
+                    captured_id = captured.id
+                    captured_kind = captured.kind
+                else:
+                    # Same-color occupancy blocks landing. Retry on the next
+                    # time advance so the jumper stays airborne until the
+                    # square becomes available.
+                    motion.arrival_time_ms = target_time_ms + 1
+                    return None
+
+            board.place_piece(piece)
+            piece.state = PieceState.IDLE
+
+            return ArrivalEvent(
+                piece_id=piece.id,
+                source=motion.source,
+                destination=motion.destination,
+                captured_piece_id=captured_id,
+                captured_kind=captured_kind,
+            )
 
         captured = board.piece_at(motion.destination)
         captured_id = None

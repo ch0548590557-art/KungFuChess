@@ -1,4 +1,4 @@
-"""
++"""
 Runs every .kfc script in tests/integration/scripts/ through ScriptRunner,
 which drives Controller/GameEngine exactly the way a real click would
 (Section 15 - never touches Board directly). One pytest test per file

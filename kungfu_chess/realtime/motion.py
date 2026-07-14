@@ -37,6 +37,11 @@ from typing import Optional
 from kungfu_chess.model.position import Position
 
 
+class MotionKind:
+    MOVE = "move"
+    JUMP = "jump"
+
+
 @dataclass
 class Motion:
     """One piece, currently travelling from source to destination."""
@@ -45,6 +50,7 @@ class Motion:
     destination: Position
     start_time_ms: int
     arrival_time_ms: int
+    action_kind: str = MotionKind.MOVE
 
     def has_arrived_by(self, now_ms: int) -> bool:
         return now_ms >= self.arrival_time_ms
