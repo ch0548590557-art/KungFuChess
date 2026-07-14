@@ -14,9 +14,21 @@ alternatives. This README is the map; the docstrings are the territory.
 
 ```bash
 pip install pytest
-python -m pytest tests/ -v      # 55 unit tests + 7 text-integration tests
-python -m kungfu_chess.app       # prints a starting chess position
+python -m pytest tests/ -v                                   # unit + text-integration + CLI-grader tests
+python -m kungfu_chess.app                                    # interactive: prints a starting chess position
+echo "Board:
+wK . .
+Commands:
+print board" | python -m kungfu_chess.app                     # piped: runs the text protocol instead
 ```
+
+`kungfu_chess/app.py` is the **only** entry point in this project - there
+is no separate `main.py`. `app.main()` checks whether stdin is piped
+(`sys.stdin.isatty()`): piped input runs the grader's `Board:`/`Commands:`
+text protocol via `run_cli()`; an interactive terminal with nothing piped
+in prints a demo starting position instead. Both paths call the exact
+same `build_game()` composition root, so there is exactly one place any
+future change to how the game is wired needs to happen.
 
 ## Package structure
 
@@ -47,13 +59,15 @@ kungfu_chess/
   texttests/
     script_parser.py                    # .kfc text -> command list
     script_runner.py                     # drives Controller/GameEngine, never Board
-  app.py                                  # composition root
+  app.py                                  # THE single entry point: build_game() + run_cli() + main()
 
 tests/
-  unit/            # one file per class, per Section 16's ownership table
+  unit/                    # one file per class, per Section 16's ownership table
+    test_app.py             # build_game() wiring + run_cli() protocol + main()'s mode selection, in-process
   integration/
-    scripts/*.kfc  # 01..07, the last one (07) demonstrates simultaneous movement
-    test_text_scripts.py
+    scripts/*.kfc            # 01..07, the last one (07) demonstrates simultaneous movement
+    test_text_scripts.py      # runs the .kfc scripts through ScriptRunner
+    test_cli_grader.py         # the grader's own text-protocol cases, end-to-end via `python -m kungfu_chess.app`
 ```
 
 ## Layer ownership → pattern → why (quick reference)
