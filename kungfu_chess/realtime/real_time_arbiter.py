@@ -98,7 +98,11 @@ class RealTimeArbiter:
 
     def is_piece_moving(self, piece_id: int) -> bool:
         return any(m.piece_id == piece_id for m in self._active_motions)
-
+    def active_motions(self) -> List[Motion]:
+        """Read-only view of every currently in-flight Motion, for the
+        rendering layer. Returns a shallow copy so a caller can never
+        mutate the arbiter's real list through it."""
+        return list(self._active_motions)
     def can_start_motion(self, piece_id: int) -> bool:
         if self.is_piece_moving(piece_id):
             return False

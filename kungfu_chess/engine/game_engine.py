@@ -71,7 +71,7 @@ class GameSnapshot:
     pieces: list          # list of (kind, color, row, col, state) tuples
     game_over: bool
     winner: str = None
-
+    motions: dict = None
 
 class GameEngine:
     def __init__(self, board: Board, rule_engine: RuleEngine = None,
@@ -171,12 +171,18 @@ class GameEngine:
             (p.kind, p.color, p.cell.row, p.cell.col, p.state.name)
             for p in self._board.all_pieces()
         ]
+        motions = {
+            (m.source.row, m.source.col):
+                (m.destination.row, m.destination.col, m.start_time_ms, m.arrival_time_ms)
+            for m in self._arbiter.active_motions()
+        }
         return GameSnapshot(
             board_width=self._board.width,
             board_height=self._board.height,
             pieces=pieces,
             game_over=self._state.game_over,
             winner=self._state.winner,
+            motions=motions,
         )
 
     # ---- read-only accessors used by BoardPrinter / tests --------------
