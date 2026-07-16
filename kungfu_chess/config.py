@@ -52,3 +52,10 @@ PROMOTION_ENABLED = True
 PROMOTION_TARGETS = {
     PAWN: QUEEN,
 }
+
+# --- Step 6: mouse input double-click detection ----------------------------
+# How long (ms) after a first click InputRouter still treats a second click
+# on the same cell as a double-click (-> jump) rather than two separate,
+# unrelated clicks. Same "one named knob, not a literal buried in the
+# class" approach as JUMP_DURATION_MS above.
+DOUBLE_CLICK_WINDOW_MS = 300

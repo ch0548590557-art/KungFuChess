@@ -1,0 +1,108 @@
+"""
+GameWindow: owns the real on-screen game loop. It is the one place that
+turns wall-clock time into the single now_ms reading that GameEngine.wait,
+InputRouter.tick and GameRenderer.render all share for one frame, and the
+one place that wires a real OS mouse click into InputRouter.on_mouse_down.
+
+WHY GameEngine's OWN CLOCK, NOT WALL-CLOCK TIME, FEEDS THE RENDERER:
+GameEngine.wait(ms) takes a *delta* and advances an internal clock that
+starts at 0; GameSnapshot.motions timestamps (start_ms/arrival_ms) are
+recorded on that same internal clock. GameRenderer.render(snapshot, now_ms)
+interpolates motion progress using those timestamps, so now_ms has to be on
+that identical timescale - raw wall-clock milliseconds would desync it
+immediately. GameWindow is the only place that bridges the two: it reads
+wall time once per frame, turns it into a delta, and accumulates that delta
+into its own mirrored "engine clock" - the same value then goes to
+engine.wait(), input_router.tick() and renderer.render() for that frame,
+so none of the three can ever drift relative to each other.
+"""
+
+from __future__ import annotations
+
+import time
+from typing import Callable, Optional, Type
+
+from kungfu_chess.graphics.img import Img
+
+# Mirrors cv2.EVENT_LBUTTONDOWN's numeric value. Kept as a local constant
+# instead of `import cv2` so "cv2." stays confined to img.py.
+_EVENT_LBUTTONDOWN = 1
+
+
+class GameWindow:
+    def __init__(self, engine, renderer, input_router,
+                 clock: Optional[Callable[[], int]] = None,
+                 img_cls: Type[Img] = Img,
+                 window_name: str = "KungFuChess",
+                 frame_delay_ms: int = 1):
+        self._engine = engine
+        self._renderer = renderer
+        self._input_router = input_router
+        self._clock = clock if clock is not None else self._default_clock
+        self._img_cls = img_cls
+        self._window_name = window_name
+        self._frame_delay_ms = frame_delay_ms
+
+        self._engine_clock_ms = 0
+        self._last_wall_ms: Optional[int] = None
+        self._mouse_registered = False
+
+    @staticmethod
+    def _default_clock() -> int:
+        return int(time.time() * 1000)
+
+    def step(self) -> Img:
+        """One frame's worth of work: advance the shared clock, let a
+        pending single click commit if its window elapsed, advance the
+        engine, render, and show the result. Returns the drawn canvas so
+        it can be asserted on directly in a test, without needing a real
+        window.
+        """
+        wall_now = self._clock()
+        delta_ms = 0 if self._last_wall_ms is None else wall_now - self._last_wall_ms
+        self._last_wall_ms = wall_now
+        self._engine_clock_ms += delta_ms
+
+        self._engine.wait(delta_ms)
+        self._input_router.tick(self._engine_clock_ms)
+
+        snapshot = self._engine.snapshot()
+        canvas = self._renderer.render(snapshot, self._engine_clock_ms)
+
+        canvas.show_frame(self._window_name, self._frame_delay_ms)
+        self._ensure_mouse_callback_registered()
+
+        return canvas
+
+    def _ensure_mouse_callback_registered(self) -> None:
+        """cv2.setMouseCallback requires the named window to already
+        exist, and the window is only created by the first show_frame()
+        call above - so registration is deferred to right after that
+        first frame, not done eagerly in __init__.
+        """
+        if not self._mouse_registered:
+            self._img_cls.set_mouse_callback(self._window_name, self._on_mouse)
+            self._mouse_registered = True
+
+    def _on_mouse(self, event, x, y, flags, param) -> None:
+        """The raw window-toolkit mouse callback. Reuses this frame's
+        already-computed self._engine_clock_ms instead of taking a second,
+        independent clock reading, so a click during frame N is always
+        timestamped with frame N's one clock reading - never a value that
+        could drift from what wait()/tick()/render() just used.
+        """
+        if event == _EVENT_LBUTTONDOWN:
+            self._input_router.on_mouse_down(x, y, self._engine_clock_ms)
+
+    def run(self) -> None:
+        """The actual infinite loop. Effectively untestable for real cv2
+        semantics (like main()'s event loop in most GUI apps) - step() is
+        the tested unit; this just repeats it until the window is closed.
+        Do-while shaped, not a pre-check while, because the window does
+        not exist yet before the first step() runs.
+        """
+        while True:
+            self.step()
+            if not self._img_cls.is_window_open(self._window_name):
+                break
+        self._img_cls.close(self._window_name)

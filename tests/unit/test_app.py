@@ -21,7 +21,9 @@ from kungfu_chess.io.board_parser import BoardParser
 from kungfu_chess.io.board_printer import BoardPrinter
 from kungfu_chess.input.board_mapper import BoardMapper
 from kungfu_chess.input.controller import Controller
+from kungfu_chess.input.input_router import InputRouter
 from kungfu_chess.engine.game_engine import GameEngine
+from kungfu_chess.graphics.game_renderer import GameRenderer
 from kungfu_chess.view.renderer import Renderer
 
 
@@ -171,15 +173,38 @@ def test_main_runs_cli_protocol_when_stdin_is_piped(monkeypatch, capsys):
     assert capsys.readouterr().out.strip() == "wR . ."
 
 
-def test_main_runs_demo_when_stdin_is_a_terminal(monkeypatch, capsys):
+class _FakeGameWindow:
+    """Stand-in for graphics.game_window.GameWindow - proves main()'s
+    interactive branch builds and runs a real window around the real
+    engine/renderer/input_router, without opening an actual cv2 window
+    during the test suite."""
+    instances = []
+
+    def __init__(self, engine, renderer, input_router):
+        self.engine = engine
+        self.renderer = renderer
+        self.input_router = input_router
+        self.run_called = False
+        _FakeGameWindow.instances.append(self)
+
+    def run(self):
+        self.run_called = True
+
+
+def test_main_opens_a_real_game_window_when_stdin_is_a_terminal(monkeypatch):
     fake_in = _FakeStdin("", is_tty=True)
     monkeypatch.setattr(app.sys, "stdin", fake_in)
+    _FakeGameWindow.instances = []
+    monkeypatch.setattr(app, "GameWindow", _FakeGameWindow)
 
     app.main()
 
-    # The demo prints the standard starting position - just confirm it
-    # produced the full 8-row board rather than trying to run the CLI
-    # protocol against an empty script.
-    printed_rows = capsys.readouterr().out.strip().splitlines()
-    assert len(printed_rows) == 8
-    assert printed_rows[0].split() == "bR bN bB bQ bK bB bN bR".split()
+    assert len(_FakeGameWindow.instances) == 1
+    window = _FakeGameWindow.instances[0]
+    assert window.run_called is True
+    assert isinstance(window.engine, GameEngine)
+    assert isinstance(window.renderer, GameRenderer)
+    assert isinstance(window.input_router, InputRouter)
+    # Sanity check that the real starting position was actually wired in.
+    assert window.engine.board.width == 8
+    assert window.engine.board.height == 8

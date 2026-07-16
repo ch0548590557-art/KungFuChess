@@ -15,27 +15,38 @@ which mode to run in by asking one question - "is there piped stdin, or
 is this an interactive/demo invocation?" - via `sys.stdin.isatty()`. A
 grader (or anything else) that pipes a script into
 `python -m kungfu_chess.app` gets the exact same CLI protocol main.py
-used to provide; running it with no piped input prints a demo starting
-position instead. One file, one process, two ways of driving the exact
-same collaborators - never two separate implementations to keep in sync.
+used to provide; running it with no piped input now opens a real window
+(GameWindow) instead of just printing a demo starting position. One
+file, one process, two ways of driving the exact same collaborators -
+never two separate implementations to keep in sync.
 
-This module intentionally stops short of an actual pygame/tkinter event
-loop, since "the supplied drawing/image library" is an environment detail
-outside this deliverable's scope (see view/renderer.py's docstring). What
-matters architecturally is shown here: every real click would go through
-`controller.click(x, y)`, every frame would read `engine.snapshot()` and
-hand it to `renderer.draw(...)`, and nothing here ever reaches into
-Board, RuleEngine or RealTimeArbiter directly.
+WHY THE INTERACTIVE BRANCH BUILDS ITS OWN GRAPHICS STACK HERE INSTEAD OF
+INSIDE build_game():
+build_game() is shared by run_cli() too, and run_cli() must keep working
+with no image library, no on-screen window, and no assets/ folder at all
+(the grader pipes text over stdin/stdout - opening a cv2 window there
+would be wrong, not just unnecessary). AssetLoader/BoardGeometry/
+GameRenderer/InputRouter/GameWindow are therefore composed only in
+`_run_interactive_window()`, wrapped around the same real `engine`/
+`controller` build_game() already produces - so both modes still drive
+the exact same collaborators, they just render them differently.
 """
 
 import sys
+from pathlib import Path
 
 from kungfu_chess.io.board_parser import BoardParser, BoardParseError
 from kungfu_chess.io.board_printer import BoardPrinter
 from kungfu_chess.input.board_mapper import BoardMapper
 from kungfu_chess.input.controller import Controller
+from kungfu_chess.input.input_router import InputRouter
 from kungfu_chess.engine.game_engine import GameEngine
 from kungfu_chess.view.renderer import Renderer
+import kungfu_chess.config as config
+from kungfu_chess.graphics.asset_loader import AssetLoader
+from kungfu_chess.graphics.board_geometry import BoardGeometry
+from kungfu_chess.graphics.game_renderer import GameRenderer
+from kungfu_chess.graphics.game_window import GameWindow
 
 
 def build_game(board_text_rows):
@@ -155,11 +166,13 @@ def run_cli(text: str, out=None) -> None:
         # valid run.
 
 
-def _print_demo_starting_position() -> None:
-    """Interactive/demo mode: build the standard starting position and
-    print it once. A real pygame/tkinter shell would call build_game()
-    the same way and then start its own event loop instead of returning
-    immediately (see the module docstring above).
+def _run_interactive_window() -> None:
+    """Interactive mode: build the standard starting position, then open
+    a real on-screen window and run the game loop until the window is
+    closed. Uses the same build_game() composition root as run_cli() for
+    `engine`/`controller`, and adds the graphics-only collaborators
+    (AssetLoader/BoardGeometry/GameRenderer/InputRouter/GameWindow) that
+    run_cli()'s text protocol has no use for (see module docstring).
     """
     starting_position = [
         "bR bN bB bQ bK bB bN bR".split(),
@@ -171,19 +184,29 @@ def _print_demo_starting_position() -> None:
         ["wP"] * 8,
         "wR wN wB wQ wK wB wN wR".split(),
     ]
-    engine, controller, renderer, printer = build_game(starting_position)
-    print(printer.print_board(engine.board))
+    engine, controller, _renderer, _printer = build_game(starting_position)
+
+    assets_root = Path(__file__).resolve().parent.parent / "assets"
+    asset_loader = AssetLoader(assets_root)
+    asset_loader.load(engine.board.width, engine.board.height)
+    geometry = BoardGeometry(cell_size_px=config.CELL_SIZE_PX)
+    game_renderer = GameRenderer(asset_loader, geometry)
+    input_router = InputRouter(controller, geometry)
+
+    window = GameWindow(engine, game_renderer, input_router)
+    window.run()
 
 
 def main() -> None:
     """The one entry point. Piped stdin (a grader, or `... | python -m
     kungfu_chess.app`) means "run the text protocol"; an interactive
-    terminal with nothing piped in means "run the demo". This is the
-    only branching point in the whole project between the two modes -
-    everything past this function is the shared, real game code.
+    terminal with nothing piped in means "open the real game window".
+    This is the only branching point in the whole project between the
+    two modes - everything past this function is the shared, real game
+    code.
     """
     if sys.stdin.isatty():
-        _print_demo_starting_position()
+        _run_interactive_window()
     else:
         run_cli(sys.stdin.read())
 

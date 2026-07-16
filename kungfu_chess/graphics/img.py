@@ -38,7 +38,16 @@ class Img:
             `self`, so you can chain:  `sprite = Img().read("foo.png", (64,64))`
         """
         path = str(path)
-        self.img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+        # cv2.imread() can't open a path containing non-ASCII characters
+        # on Windows (a known OpenCV limitation) even when the file
+        # genuinely exists. Reading the bytes ourselves (Unicode-safe)
+        # and decoding them in memory sidesteps that entirely, with the
+        # exact same resulting behavior for every path that already
+        # worked before.
+        if not pathlib.Path(path).is_file():
+            raise FileNotFoundError(f"Cannot load image: {path}")
+        file_bytes = np.fromfile(path, dtype=np.uint8)
+        self.img = cv2.imdecode(file_bytes, cv2.IMREAD_UNCHANGED)
         if self.img is None:
             raise FileNotFoundError(f"Cannot load image: {path}")
 
