@@ -99,3 +99,58 @@ def test_command_after_game_over_is_rejected_and_board_unchanged():
     result = engine.request_move(Position(2, 2), Position(0, 1))
     assert result.is_accepted is False
     assert result.reason == "game_over"
+
+
+def test_captures_is_empty_before_any_capture_happens():
+    engine = build_engine(make_piece(1, 'w', 'R', 0, 0))
+    assert engine.snapshot().captures == []
+
+
+def test_a_non_king_capture_is_recorded_with_its_kind_and_color():
+    engine = build_engine(
+        make_piece(1, 'w', 'R', 0, 0),
+        make_piece(2, 'b', 'P', 0, 3),
+    )
+    engine.request_move(Position(0, 0), Position(0, 3))
+    engine.wait(3000)
+
+    assert engine.snapshot().captures == [('P', 'b')]
+
+
+def test_a_king_capture_is_recorded_in_captures_too_not_just_game_over():
+    engine = build_engine(
+        make_piece(1, 'w', 'R', 0, 0),
+        make_piece(2, 'b', 'K', 0, 3),
+    )
+    engine.request_move(Position(0, 0), Position(0, 3))
+    engine.wait(3000)
+
+    assert engine.snapshot().captures == [('K', 'b')]
+
+
+def test_captures_accumulate_across_multiple_arrivals():
+    engine = build_engine(
+        make_piece(1, 'w', 'R', 0, 0),
+        make_piece(2, 'b', 'P', 0, 3),
+        make_piece(3, 'w', 'N', 3, 0),
+        make_piece(4, 'b', 'P', 2, 2),  # a legal knight-move away from (3,0)
+    )
+    engine.request_move(Position(0, 0), Position(0, 3))  # rook captures pawn
+    engine.request_move(Position(3, 0), Position(2, 2))  # knight captures pawn
+    engine.wait(5000)
+
+    assert engine.snapshot().captures == [('P', 'b'), ('P', 'b')]
+
+
+def test_snapshot_captures_is_a_copy_not_a_live_reference():
+    engine = build_engine(
+        make_piece(1, 'w', 'R', 0, 0),
+        make_piece(2, 'b', 'P', 0, 3),
+    )
+    engine.request_move(Position(0, 0), Position(0, 3))
+    engine.wait(3000)
+
+    snapshot_captures = engine.snapshot().captures
+    snapshot_captures.append(('Q', 'w'))  # mutate the returned list
+
+    assert engine.snapshot().captures == [('P', 'b')]  # internal state untouched

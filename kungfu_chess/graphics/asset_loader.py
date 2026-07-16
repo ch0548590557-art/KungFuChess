@@ -1,8 +1,8 @@
 """
 AssetLoader: reads board.png, every piece's sprite frames, and every
 piece's per-state config.json — once, at startup — and keeps all of it
-in memory (Step 3's exit condition: "כל התמונות וההגדרות נטענות פעם
-אחת בתחילת המשחק"). Nothing downstream (Animation, GameRenderer) ever
+in memory (Step 3's exit condition: "
+). Nothing downstream (Animation, GameRenderer) ever
 touches the filesystem again after AssetLoader.load() returns; they only
 ever ask AssetLoader for an already-loaded StateAssets.
 """
@@ -71,8 +71,8 @@ class AssetLoader:
 
     @staticmethod
     def piece_token(color: str, kind: str) -> str:
-        """('w','P') -> 'wP' - matches the assets/pieces/<token>/ folder
-        naming already used by the shipped asset pack."""
+        """('w','P') -> 'wP' - matches the assets/pieces_mine/<token>/
+        folder naming already used by the shipped asset pack."""
         return f"{color}{kind}"
 
     # ---- internals --------------------------------------------------------
@@ -91,7 +91,7 @@ class AssetLoader:
         return Img().read(path, size=target_size)
 
     def _load_state(self, token: str, state: str) -> StateAssets:
-        state_dir = self._root / "pieces" / token / "states" / state
+        state_dir = self._root / "pieces_mine" / token / "states" / state
         raw_config = self._read_config(state_dir / "config.json")
         graphics = raw_config.get("graphics", {})
         physics = raw_config.get("physics", {})

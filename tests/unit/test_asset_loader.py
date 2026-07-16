@@ -8,7 +8,7 @@ from kungfu_chess.graphics.img import Img
 
 _REAL_ASSETS_ROOT = "assets"
 _BOARD_PNG = "assets/board.png"
-_SQUARE_SPRITE = "assets/pieces/wP/states/idle/sprites/1.png"
+_SQUARE_SPRITE = "assets/pieces_mine/wP/states/idle/sprites/1.png"
 
 
 def _write_state(states_dir, frame_paths, frames_per_sec=1, is_loop=True,
@@ -59,7 +59,7 @@ def test_load_reads_the_real_shipped_state_assets_correctly():
     loader.load(board_width_cells=8, board_height_cells=8)
     state_assets = loader.state_assets("wP", "idle")
 
-    # These values mirror assets/pieces/wP/states/idle/config.json - if
+    # These values mirror assets/pieces_mine/wP/states/idle/config.json - if
     # this test breaks, either the shipped config.json changed or
     # AssetLoader stopped reading it correctly.
     assert len(state_assets.frames) == 5
@@ -71,7 +71,7 @@ def test_load_reads_the_real_shipped_state_assets_correctly():
 def test_state_assets_raises_key_error_for_an_unknown_state(tmp_path):
     shutil.copy(_BOARD_PNG, tmp_path / "board.png")
     loader = AssetLoader(tmp_path, piece_tokens=["xX"], states=("idle",))
-    _write_state(tmp_path / "pieces" / "xX" / "states" / "idle",
+    _write_state(tmp_path / "pieces_mine" / "xX" / "states" / "idle",
                   {"1.png": _SQUARE_SPRITE})
 
     loader.load(board_width_cells=1, board_height_cells=1)
@@ -83,7 +83,7 @@ def test_state_assets_raises_key_error_for_an_unknown_state(tmp_path):
 def test_load_raises_file_not_found_when_config_json_is_missing(tmp_path):
     shutil.copy(_BOARD_PNG, tmp_path / "board.png")
     # A states/idle/ folder that only has sprites/, no config.json.
-    sprites_dir = tmp_path / "pieces" / "xX" / "states" / "idle" / "sprites"
+    sprites_dir = tmp_path / "pieces_mine" / "xX" / "states" / "idle" / "sprites"
     sprites_dir.mkdir(parents=True)
     shutil.copy(_SQUARE_SPRITE, sprites_dir / "1.png")
 
@@ -95,7 +95,7 @@ def test_load_raises_file_not_found_when_config_json_is_missing(tmp_path):
 
 def test_load_raises_file_not_found_when_sprites_folder_is_missing(tmp_path):
     shutil.copy(_BOARD_PNG, tmp_path / "board.png")
-    states_dir = tmp_path / "pieces" / "xX" / "states" / "idle"
+    states_dir = tmp_path / "pieces_mine" / "xX" / "states" / "idle"
     states_dir.mkdir(parents=True)
     (states_dir / "config.json").write_text(json.dumps(
         {"physics": {}, "graphics": {}}))
@@ -109,7 +109,7 @@ def test_load_raises_file_not_found_when_sprites_folder_is_missing(tmp_path):
 
 def test_load_raises_file_not_found_when_no_numbered_sprites_exist(tmp_path):
     shutil.copy(_BOARD_PNG, tmp_path / "board.png")
-    states_dir = tmp_path / "pieces" / "xX" / "states" / "idle"
+    states_dir = tmp_path / "pieces_mine" / "xX" / "states" / "idle"
     sprites_dir = states_dir / "sprites"
     sprites_dir.mkdir(parents=True)
     shutil.copy(_SQUARE_SPRITE, sprites_dir / "not_a_number.png")  # wrong name pattern
@@ -124,7 +124,7 @@ def test_load_raises_file_not_found_when_no_numbered_sprites_exist(tmp_path):
 
 def test_sprite_frames_are_sorted_numerically_not_lexicographically(tmp_path):
     shutil.copy(_BOARD_PNG, tmp_path / "board.png")
-    states_dir = tmp_path / "pieces" / "xX" / "states" / "idle"
+    states_dir = tmp_path / "pieces_mine" / "xX" / "states" / "idle"
     # board.png (822x828, not square) and the shipped wP sprite (320x320,
     # perfectly square) resize to different final dimensions under
     # keep_aspect=True - that difference is how the test tells the two

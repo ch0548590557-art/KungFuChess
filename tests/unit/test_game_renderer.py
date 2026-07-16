@@ -15,10 +15,10 @@ def _build_renderer(piece_tokens=("wP",), states=("idle", "move")):
     return GameRenderer(loader, geometry), loader
 
 
-def _snapshot(pieces=(), motions=None):
+def _snapshot(pieces=(), motions=None, game_over=False, winner=None, captures=None):
     return GameSnapshot(board_width=_BOARD_CELLS, board_height=_BOARD_CELLS,
-                         pieces=list(pieces), game_over=False, winner=None,
-                         motions=motions or {})
+                         pieces=list(pieces), game_over=game_over, winner=winner,
+                         motions=motions or {}, captures=captures)
 
 
 def test_render_with_no_pieces_returns_a_canvas_sized_to_the_board():
@@ -120,3 +120,47 @@ def test_render_forgets_stale_animations_once_a_cell_empties():
 
     renderer.render(empty, now_ms=100)
     assert (0, 0) not in renderer._animations
+
+
+def test_render_draws_a_game_over_overlay_without_raising():
+    renderer, loader = _build_renderer()
+    snapshot = _snapshot(pieces=[("P", "w", 0, 0, "IDLE")],
+                          game_over=True, winner="w", captures=[("P", "b")])
+
+    canvas = renderer.render(snapshot, now_ms=0)
+
+    assert (canvas.width, canvas.height) == (loader.board().width, loader.board().height)
+
+
+def test_render_game_over_overlay_works_for_both_winner_colors():
+    renderer, _ = _build_renderer()
+
+    for winner in ("w", "b"):
+        snapshot = _snapshot(game_over=True, winner=winner, captures=[])
+        canvas = renderer.render(snapshot, now_ms=0)
+        assert (canvas.width, canvas.height) == (800, 800)
+
+
+def test_render_game_over_overlay_tolerates_captures_being_none():
+    # GameSnapshot.captures defaults to None (dataclass default) rather
+    # than an empty list - the overlay must not crash on that default.
+    renderer, _ = _build_renderer()
+    snapshot = _snapshot(game_over=True, winner="w", captures=None)
+
+    canvas = renderer.render(snapshot, now_ms=0)
+
+    assert (canvas.width, canvas.height) == (800, 800)
+
+
+def test_render_with_game_still_ongoing_does_not_raise():
+    # Img exposes no pixel-read API, so this can't directly prove the
+    # overlay branch was skipped - only that the ordinary, game_over=False
+    # path (the overwhelming majority of frames) still renders cleanly
+    # now that _draw_game_over_overlay exists as a possible extra step.
+    renderer, _ = _build_renderer()
+    snapshot = _snapshot(pieces=[("P", "w", 0, 0, "IDLE")],
+                          game_over=False, winner=None, captures=[])
+
+    canvas = renderer.render(snapshot, now_ms=0)
+
+    assert (canvas.width, canvas.height) == (800, 800)

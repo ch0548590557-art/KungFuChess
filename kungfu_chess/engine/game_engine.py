@@ -72,6 +72,7 @@ class GameSnapshot:
     game_over: bool
     winner: str = None
     motions: dict = None
+    captures: list = None  # list of (kind, color) tuples, one per piece captured so far this game
 
 class GameEngine:
     def __init__(self, board: Board, rule_engine: RuleEngine = None,
@@ -81,6 +82,7 @@ class GameEngine:
         self._arbiter = arbiter or RealTimeArbiter()
         self._state = state or GameState()
         self._clock_ms = 0
+        self._captures: list = []
 
     # ---- public command boundary --------------------------------------
 
@@ -138,6 +140,10 @@ class GameEngine:
             if event.captured_kind == config.KING:
                 capturer = self._board.piece_by_id(event.piece_id)
                 self._state.end_game(winner_color=capturer.color)
+            if event.captured_piece_id is not None:
+                capturer = self._board.piece_by_id(event.piece_id)
+                captured_color = 'b' if capturer.color == 'w' else 'w'
+                self._captures.append((event.captured_kind, captured_color))
             self._maybe_promote(event)
 
     def _maybe_promote(self, event) -> None:
@@ -183,6 +189,7 @@ class GameEngine:
             game_over=self._state.game_over,
             winner=self._state.winner,
             motions=motions,
+            captures=list(self._captures),
         )
 
     # ---- read-only accessors used by BoardPrinter / tests --------------
