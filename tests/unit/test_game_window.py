@@ -21,8 +21,9 @@ class FakeEngine:
 
 
 class FakeRenderer:
-    def __init__(self):
+    def __init__(self, left_panel_width_px=0):
         self.render_calls = []
+        self.left_panel_width_px = left_panel_width_px
 
     def render(self, snapshot, now_ms):
         self.render_calls.append((snapshot, now_ms))
@@ -60,10 +61,10 @@ class FakeImgCls:
         self.close_calls.append(window_name)
 
 
-def _build(clock_values, is_window_open_sequence=()):
+def _build(clock_values, is_window_open_sequence=(), left_panel_width_px=0):
     values = iter(clock_values)
     engine = FakeEngine()
-    renderer = FakeRenderer()
+    renderer = FakeRenderer(left_panel_width_px=left_panel_width_px)
     input_router = FakeInputRouter()
     img_cls = FakeImgCls(is_window_open_sequence)
     window = GameWindow(engine, renderer, input_router,
@@ -129,6 +130,20 @@ def test_a_simulated_click_is_stamped_with_that_frames_engine_clock_value():
     captured_callback(event=1, x=42, y=7, flags=0, param=None)  # 1 == LBUTTONDOWN
 
     assert input_router.on_mouse_down_calls == [(42, 7, 300)]
+
+
+def test_a_click_has_the_renderers_left_panel_width_subtracted_before_reaching_input_router():
+    # GameRenderer's canvas now has a side panel left of the board, so a
+    # raw window click's x must be shifted back to board-relative pixels
+    # before InputRouter (which knows nothing about panels) ever sees it.
+    window, engine, renderer, input_router, img_cls = _build(
+        clock_values=[1000], left_panel_width_px=150)
+
+    window.step()
+    _, captured_callback = img_cls.set_mouse_callback_calls[0]
+    captured_callback(event=1, x=200, y=7, flags=0, param=None)  # 1 == LBUTTONDOWN
+
+    assert input_router.on_mouse_down_calls == [(50, 7, 0)]
 
 
 def test_a_simulated_non_left_button_event_is_ignored():

@@ -175,6 +175,16 @@ class Img:
         else:
             other_img.img[y:y + h, x:x + w] = self.img
 
+    def fill_rect(self, x, y, width, height, color=(255, 255, 255, 255)):
+        """Draw a solid filled rectangle - used e.g. as a thin header
+        divider under a table's column titles. A plain cv2.rectangle
+        wrapper (filled via thickness=cv2.FILLED), kept this small and
+        generic rather than a "divider line" method specifically, so any
+        future caller needing a solid block of color has it too."""
+        if self.img is None:
+            raise ValueError("Image not loaded.")
+        cv2.rectangle(self.img, (x, y), (x + width, y + height), color, cv2.FILLED)
+
     def put_text(self, txt, x, y, font_size, color=(255, 255, 255, 255), thickness=1):
         if self.img is None:
             raise ValueError("Image not loaded.")

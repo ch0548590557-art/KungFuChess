@@ -105,3 +105,16 @@ def test_put_text_does_not_raise_and_leaves_dimensions_unchanged():
     canvas.put_text("hi", 10, 50, font_size=1)
 
     assert (canvas.width, canvas.height) == (200, 100)
+
+
+def test_fill_rect_does_not_raise_and_leaves_dimensions_unchanged():
+    canvas = Img.blank(200, 100)
+
+    canvas.fill_rect(10, 10, 50, 4, color=(255, 255, 255, 255))
+
+    assert (canvas.width, canvas.height) == (200, 100)
+
+
+def test_fill_rect_raises_before_any_image_is_loaded():
+    with pytest.raises(ValueError):
+        Img().fill_rect(0, 0, 10, 10)

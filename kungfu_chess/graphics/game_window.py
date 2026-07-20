@@ -90,9 +90,20 @@ class GameWindow:
         independent clock reading, so a click during frame N is always
         timestamped with frame N's one clock reading - never a value that
         could drift from what wait()/tick()/render() just used.
+
+        `x` is subtracted by the renderer's own left_panel_width_px before
+        it ever reaches InputRouter, since the renderer's canvas now has a
+        side panel sitting left of the board (x=0 in the window is no
+        longer x=0 on the board). This keeps InputRouter itself completely
+        unaware of panels - it still only ever sees board-relative pixels,
+        exactly as BoardMapper/Controller downstream already expect - and
+        keeps the panel-layout decision owned by GameRenderer alone,
+        GameWindow just asks its renderer for the number rather than
+        hard-coding it here.
         """
         if event == _EVENT_LBUTTONDOWN:
-            self._input_router.on_mouse_down(x, y, self._engine_clock_ms)
+            board_x = x - self._renderer.left_panel_width_px
+            self._input_router.on_mouse_down(board_x, y, self._engine_clock_ms)
 
     def run(self) -> None:
         """The actual infinite loop. Effectively untestable for real cv2

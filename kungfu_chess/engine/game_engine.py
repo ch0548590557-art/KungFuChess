@@ -55,6 +55,7 @@ from kungfu_chess.model.game_state import GameState
 from kungfu_chess.rules.rule_engine import RuleEngine
 from kungfu_chess.rules import promotion_rules
 from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
+from kungfu_chess.engine import notation
 import kungfu_chess.config as config
 
 
@@ -73,6 +74,7 @@ class GameSnapshot:
     winner: str = None
     motions: dict = None
     captures: list = None  # list of (kind, color) tuples, one per piece captured so far this game
+    completed_moves: list = None  # list of (color, san, timestamp_ms) tuples, in completion order
 
 class GameEngine:
     def __init__(self, board: Board, rule_engine: RuleEngine = None,
@@ -83,6 +85,7 @@ class GameEngine:
         self._state = state or GameState()
         self._clock_ms = 0
         self._captures: list = []
+        self._completed_moves: list = []
 
     # ---- public command boundary --------------------------------------
 
@@ -137,16 +140,36 @@ class GameEngine:
         self._clock_ms += ms
         events = self._arbiter.advance_time(self._board, self._clock_ms)
         for event in events:
+            piece = self._board.piece_by_id(event.piece_id)
+            moved_kind = piece.kind if piece is not None else None
+            is_capture = event.captured_piece_id is not None
+
             if event.captured_kind == config.KING:
                 capturer = self._board.piece_by_id(event.piece_id)
                 self._state.end_game(winner_color=capturer.color)
-            if event.captured_piece_id is not None:
+            if is_capture:
                 capturer = self._board.piece_by_id(event.piece_id)
                 captured_color = 'b' if capturer.color == 'w' else 'w'
                 self._captures.append((event.captured_kind, captured_color))
-            self._maybe_promote(event)
 
-    def _maybe_promote(self, event) -> None:
+            promoted_to = self._maybe_promote(event)
+            self._maybe_record_move(event, piece, moved_kind, is_capture, promoted_to)
+
+    def _maybe_record_move(self, event, piece, moved_kind, is_capture, promoted_to) -> None:
+        """Only WALK arrivals that actually changed the piece's cell are
+        real chess moves - a Jump lands back on its own cell
+        (event.source == event.destination), and so does the defender in
+        an airborne-Jump capture (Jump extra-route rule in
+        real_time_arbiter.py); neither is a move a SAN log should show."""
+        if piece is None or event.source == event.destination:
+            return
+        san = notation.build_san(
+            self._board, piece, moved_kind, event.source, event.destination,
+            is_capture, promoted_to,
+        )
+        self._completed_moves.append((piece.color, san, self._clock_ms))
+
+    def _maybe_promote(self, event) -> "str | None":
         """Pawn promotion is an *arrival-time* consequence (Section 10's
         pattern for king-capture applies equally here): RealTimeArbiter
         only knows about generic motion/capture bookkeeping - it has no
@@ -167,10 +190,11 @@ class GameEngine:
         """
         piece = self._board.piece_by_id(event.piece_id)
         if piece is None:
-            return
+            return None
         target_kind = promotion_rules.promotion_target(self._board, piece)
         if target_kind is not None:
             piece.kind = target_kind
+        return target_kind
 
     def snapshot(self) -> GameSnapshot:
         pieces = [
@@ -190,6 +214,7 @@ class GameEngine:
             winner=self._state.winner,
             motions=motions,
             captures=list(self._captures),
+            completed_moves=list(self._completed_moves),
         )
 
     # ---- read-only accessors used by BoardPrinter / tests --------------
