@@ -1,4 +1,6 @@
 import kungfu_chess.config as config
+from kungfu_chess.bus.event_bus import EventBus
+from kungfu_chess.bus.events import FrameTickEvent
 from kungfu_chess.engine.game_engine import GameSnapshot
 from kungfu_chess.graphics.asset_loader import AssetLoader
 from kungfu_chess.graphics.board_geometry import BoardGeometry
@@ -239,6 +241,17 @@ def test_render_with_many_completed_moves_does_not_raise():
     canvas = renderer.render(snapshot, now_ms=0)
 
     assert (canvas.width, canvas.height) == (800 + 2 * _PANEL_WIDTH_PX, 800)
+
+
+def test_subscribe_to_renders_on_frame_tick_event():
+    renderer, _ = _build_renderer()
+    bus = EventBus()
+    renderer.subscribe_to(bus)
+    snapshot = _snapshot(pieces=[("P", "w", 0, 0, "IDLE")])
+
+    bus.publish(FrameTickEvent(snapshot=snapshot, now_ms=0))
+
+    assert (0, 0) in renderer._animations
 
 
 def test_render_with_game_still_ongoing_does_not_raise():

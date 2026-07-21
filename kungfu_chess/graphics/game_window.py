@@ -22,6 +22,8 @@ from __future__ import annotations
 import time
 from typing import Callable, Optional, Type
 
+from kungfu_chess.bus.event_bus import EventBus
+from kungfu_chess.bus.events import FrameTickEvent
 from kungfu_chess.graphics.img import Img
 
 # Mirrors cv2.EVENT_LBUTTONDOWN's numeric value. Kept as a local constant
@@ -34,7 +36,8 @@ class GameWindow:
                  clock: Optional[Callable[[], int]] = None,
                  img_cls: Type[Img] = Img,
                  window_name: str = "KungFuChess",
-                 frame_delay_ms: int = 1):
+                 frame_delay_ms: int = 1,
+                 bus: Optional[EventBus] = None):
         self._engine = engine
         self._renderer = renderer
         self._input_router = input_router
@@ -42,6 +45,7 @@ class GameWindow:
         self._img_cls = img_cls
         self._window_name = window_name
         self._frame_delay_ms = frame_delay_ms
+        self._bus = bus
 
         self._engine_clock_ms = 0
         self._last_wall_ms: Optional[int] = None
@@ -68,6 +72,8 @@ class GameWindow:
 
         snapshot = self._engine.snapshot()
         canvas = self._renderer.render(snapshot, self._engine_clock_ms)
+        if self._bus is not None:
+            self._bus.publish(FrameTickEvent(snapshot=snapshot, now_ms=self._engine_clock_ms))
 
         canvas.show_frame(self._window_name, self._frame_delay_ms)
         self._ensure_mouse_callback_registered()
