@@ -50,6 +50,10 @@ class GameWindow:
         self._engine_clock_ms = 0
         self._last_wall_ms: Optional[int] = None
         self._mouse_registered = False
+        self._last_canvas: Optional[Img] = None
+
+        if self._bus is not None:
+            self._bus.subscribe(FrameTickEvent, self._on_frame_tick)
 
     @staticmethod
     def _default_clock() -> int:
@@ -58,9 +62,20 @@ class GameWindow:
     def step(self) -> Img:
         """One frame's worth of work: advance the shared clock, let a
         pending single click commit if its window elapsed, advance the
-        engine, render, and show the result. Returns the drawn canvas so
-        it can be asserted on directly in a test, without needing a real
-        window.
+        engine, then trigger a render. Returns the drawn canvas so it can
+        be asserted on directly in a test, without needing a real window.
+
+        WHY RENDERING HAPPENS THROUGH _on_frame_tick RATHER THAN A DIRECT
+        renderer.render() CALL HERE WHEN A BUS IS GIVEN:
+        This is the message-bus migration's switch-over step - the direct
+        call from the dual-path stage is gone; publishing FrameTickEvent
+        is now the only trigger. EventBus.publish() is synchronous, so
+        _on_frame_tick still runs inside this same step() call and
+        self._last_canvas is already set by the time step() returns -
+        no behavior changes, only how the render gets triggered. The
+        no-bus fallback below exists only for callers/tests that
+        construct a bus-less GameWindow directly; the real app (app.py)
+        always supplies a bus after this step.
         """
         wall_now = self._clock()
         delta_ms = 0 if self._last_wall_ms is None else wall_now - self._last_wall_ms
@@ -71,13 +86,20 @@ class GameWindow:
         self._input_router.tick(self._engine_clock_ms)
 
         snapshot = self._engine.snapshot()
-        canvas = self._renderer.render(snapshot, self._engine_clock_ms)
+
         if self._bus is not None:
             self._bus.publish(FrameTickEvent(snapshot=snapshot, now_ms=self._engine_clock_ms))
+            return self._last_canvas
 
+        return self._render_and_show(snapshot, self._engine_clock_ms)
+
+    def _on_frame_tick(self, event: FrameTickEvent) -> None:
+        self._last_canvas = self._render_and_show(event.snapshot, event.now_ms)
+
+    def _render_and_show(self, snapshot, now_ms: int) -> Img:
+        canvas = self._renderer.render(snapshot, now_ms)
         canvas.show_frame(self._window_name, self._frame_delay_ms)
         self._ensure_mouse_callback_registered()
-
         return canvas
 
     def _ensure_mouse_callback_registered(self) -> None:

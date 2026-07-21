@@ -43,6 +43,7 @@ from kungfu_chess.input.input_router import InputRouter
 from kungfu_chess.engine.game_engine import GameEngine
 from kungfu_chess.view.renderer import Renderer
 import kungfu_chess.config as config
+from kungfu_chess.bus.event_bus import EventBus
 from kungfu_chess.graphics.asset_loader import AssetLoader
 from kungfu_chess.graphics.board_geometry import BoardGeometry
 from kungfu_chess.graphics.game_renderer import GameRenderer
@@ -193,7 +194,8 @@ def _run_interactive_window() -> None:
     game_renderer = GameRenderer(asset_loader, geometry)
     input_router = InputRouter(controller, geometry)
 
-    window = GameWindow(engine, game_renderer, input_router)
+    bus = EventBus()
+    window = GameWindow(engine, game_renderer, input_router, bus=bus)
     window.run()
 
 

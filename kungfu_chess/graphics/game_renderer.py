@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from typing import Dict, Optional, Tuple
 
-from kungfu_chess.bus.event_bus import EventBus
-from kungfu_chess.bus.events import FrameTickEvent
 from kungfu_chess.engine.game_engine import GameSnapshot
 from kungfu_chess.graphics.animation import Animation
 from kungfu_chess.graphics.asset_loader import AssetLoader
@@ -83,16 +81,6 @@ class GameRenderer:
         it to InputRouter, instead of GameRenderer reaching into input/
         itself or InputRouter having to know this layout decision."""
         return self._panel_width_px
-
-    def subscribe_to(self, bus: EventBus) -> None:
-        """Wires FrameTickEvent -> self.render(...), discarding the
-        returned canvas. This is the message-bus migration's dual-path
-        step: GameWindow still calls render() directly too and that
-        direct call's canvas is still the only one actually shown - this
-        subscription exists purely to prove the Bus-driven path draws
-        the same thing before the direct call is removed in a later
-        step."""
-        bus.subscribe(FrameTickEvent, lambda event: self.render(event.snapshot, event.now_ms))
 
     def render(self, snapshot: GameSnapshot, now_ms: int) -> Img:
         board = self._assets.board()
