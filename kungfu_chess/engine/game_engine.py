@@ -58,7 +58,7 @@ from kungfu_chess.rules import promotion_rules
 from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
 from kungfu_chess.engine import notation
 from kungfu_chess.bus.event_bus import EventBus
-from kungfu_chess.bus.events import MoveCompletedEvent
+from kungfu_chess.bus.events import MoveCompletedEvent, MoveRequestedEvent, JumpRequestedEvent
 import kungfu_chess.config as config
 
 
@@ -91,6 +91,9 @@ class GameEngine:
         self._clock_ms = 0
         self._captures: list = []
         self._completed_moves: list = []
+        if bus is not None:
+            bus.subscribe(MoveRequestedEvent, lambda event: self.request_move(event.source, event.destination))
+            bus.subscribe(JumpRequestedEvent, lambda event: self.request_jump(event.source))
 
     # ---- public command boundary --------------------------------------
 

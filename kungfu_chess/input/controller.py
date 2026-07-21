@@ -55,7 +55,12 @@ from dataclasses import dataclass
 from typing import Optional
 
 from kungfu_chess.bus.event_bus import EventBus
-from kungfu_chess.bus.events import MouseClickEvent, MouseJumpEvent
+from kungfu_chess.bus.events import (
+    MouseClickEvent,
+    MouseJumpEvent,
+    MoveRequestedEvent,
+    JumpRequestedEvent,
+)
 from kungfu_chess.model.position import Position
 from kungfu_chess.input.board_mapper import BoardMapper
 from kungfu_chess.engine.game_engine import GameEngine, MoveResult
@@ -71,6 +76,7 @@ class Controller:
     def __init__(self, mapper: BoardMapper, engine: GameEngine, bus: Optional[EventBus] = None):
         self._mapper = mapper
         self._engine = engine
+        self._bus = bus
         self._selected: Optional[Position] = None
         if bus is not None:
             bus.subscribe(MouseClickEvent, lambda event: self.click(event.x, event.y))
@@ -101,6 +107,9 @@ class Controller:
 
         source = self._selected
         self._selected = None
+        if self._bus is not None:
+            self._bus.publish(MoveRequestedEvent(source=source, destination=pos))
+            return ControllerResult("move_requested")
         result = self._engine.request_move(source, pos)
         return ControllerResult("move_requested", move_result=result)
 
@@ -117,5 +126,8 @@ class Controller:
         if pos is None:
             return ControllerResult("ignored")
 
+        if self._bus is not None:
+            self._bus.publish(JumpRequestedEvent(source=pos))
+            return ControllerResult("jump_requested")
         result = self._engine.request_jump(pos)
         return ControllerResult("jump_requested", move_result=result)

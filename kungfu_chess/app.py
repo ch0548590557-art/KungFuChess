@@ -62,7 +62,7 @@ def build_game(board_text_rows, bus: Optional[EventBus] = None):
     parser = BoardParser()
     board = parser.parse(board_text_rows)
 
-    engine = GameEngine(board)
+    engine = GameEngine(board, bus=bus)
     mapper = BoardMapper(board)
     controller = Controller(mapper, engine, bus=bus)
     renderer = Renderer()

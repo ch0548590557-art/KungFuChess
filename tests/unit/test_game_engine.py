@@ -4,7 +4,7 @@ from kungfu_chess.model.position import Position
 from kungfu_chess.model.game_state import GameState
 from kungfu_chess.engine.game_engine import GameEngine
 from kungfu_chess.bus.event_bus import EventBus
-from kungfu_chess.bus.events import MoveCompletedEvent
+from kungfu_chess.bus.events import MoveCompletedEvent, MoveRequestedEvent, JumpRequestedEvent
 import kungfu_chess.config as config
 
 
@@ -308,6 +308,36 @@ def test_successful_jump_publishes_move_completed_event_with_is_jump_true():
     result = engine.request_jump(Position(0, 0))
 
     assert result.is_accepted is True
+    assert received == [
+        MoveCompletedEvent(source=Position(0, 0), destination=Position(0, 0), is_jump=True)
+    ]
+
+
+def test_move_requested_event_triggers_request_move_internally():
+    bus = EventBus()
+    received = []
+    bus.subscribe(MoveCompletedEvent, received.append)
+
+    b = Board(4, 4)
+    b.add_piece(make_piece(1, 'w', 'R', 0, 0))
+    engine = GameEngine(b, bus=bus)
+
+    bus.publish(MoveRequestedEvent(source=Position(0, 0), destination=Position(0, 3)))
+
+    assert received == [MoveCompletedEvent(source=Position(0, 0), destination=Position(0, 3))]
+
+
+def test_jump_requested_event_triggers_request_jump_internally():
+    bus = EventBus()
+    received = []
+    bus.subscribe(MoveCompletedEvent, received.append)
+
+    b = Board(4, 4)
+    b.add_piece(make_piece(1, 'w', 'R', 0, 0))
+    engine = GameEngine(b, bus=bus)
+
+    bus.publish(JumpRequestedEvent(source=Position(0, 0)))
+
     assert received == [
         MoveCompletedEvent(source=Position(0, 0), destination=Position(0, 0), is_jump=True)
     ]
