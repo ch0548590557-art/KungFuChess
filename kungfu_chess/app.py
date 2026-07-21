@@ -34,6 +34,7 @@ the exact same collaborators, they just render them differently.
 
 import sys
 from pathlib import Path
+from typing import Optional
 
 from kungfu_chess.io.board_parser import BoardParser, BoardParseError
 from kungfu_chess.io.board_printer import BoardPrinter
@@ -50,18 +51,20 @@ from kungfu_chess.graphics.game_renderer import GameRenderer
 from kungfu_chess.graphics.game_window import GameWindow
 
 
-def build_game(board_text_rows):
+def build_game(board_text_rows, bus: Optional[EventBus] = None):
     """Compose one of each collaborator around a starting board. Used by
     both driving modes below (run_cli and the interactive demo in
     main()), so they can never end up wiring the collaborators
-    differently from one another.
+    differently from one another. `bus` is only ever passed by the
+    interactive path - run_cli() drives Controller.click()/jump()
+    directly and has no bus to wire in.
     """
     parser = BoardParser()
     board = parser.parse(board_text_rows)
 
     engine = GameEngine(board)
     mapper = BoardMapper(board)
-    controller = Controller(mapper, engine)
+    controller = Controller(mapper, engine, bus=bus)
     renderer = Renderer()
     printer = BoardPrinter()
 
@@ -185,16 +188,19 @@ def _run_interactive_window() -> None:
         ["wP"] * 8,
         "wR wN wB wQ wK wB wN wR".split(),
     ]
-    engine, controller, _renderer, _printer = build_game(starting_position)
+    bus = EventBus()
+    # controller subscribes itself to `bus` inside build_game() (via
+    # Controller.__init__) - it is never called directly here, only
+    # InputRouter's mouse events reach it, through the bus.
+    engine, _controller, _renderer, _printer = build_game(starting_position, bus=bus)
 
     assets_root = Path(__file__).resolve().parent.parent / "assets"
     asset_loader = AssetLoader(assets_root)
     asset_loader.load(engine.board.width, engine.board.height)
     geometry = BoardGeometry(cell_size_px=config.CELL_SIZE_PX)
     game_renderer = GameRenderer(asset_loader, geometry)
-    input_router = InputRouter(controller, geometry)
+    input_router = InputRouter(bus, geometry)
 
-    bus = EventBus()
     window = GameWindow(engine, game_renderer, input_router, bus=bus)
     window.run()
 

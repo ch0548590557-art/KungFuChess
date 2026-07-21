@@ -54,6 +54,8 @@ GameEngine") readable without reaching into GameEngine internals.
 from dataclasses import dataclass
 from typing import Optional
 
+from kungfu_chess.bus.event_bus import EventBus
+from kungfu_chess.bus.events import MouseClickEvent, MouseJumpEvent
 from kungfu_chess.model.position import Position
 from kungfu_chess.input.board_mapper import BoardMapper
 from kungfu_chess.engine.game_engine import GameEngine, MoveResult
@@ -66,10 +68,13 @@ class ControllerResult:
 
 
 class Controller:
-    def __init__(self, mapper: BoardMapper, engine: GameEngine):
+    def __init__(self, mapper: BoardMapper, engine: GameEngine, bus: Optional[EventBus] = None):
         self._mapper = mapper
         self._engine = engine
         self._selected: Optional[Position] = None
+        if bus is not None:
+            bus.subscribe(MouseClickEvent, lambda event: self.click(event.x, event.y))
+            bus.subscribe(MouseJumpEvent, lambda event: self.jump(event.x, event.y))
 
     def click(self, x: int, y: int) -> ControllerResult:
         pos = self._mapper.pixel_to_cell(x, y)
