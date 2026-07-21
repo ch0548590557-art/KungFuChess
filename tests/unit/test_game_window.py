@@ -1,3 +1,5 @@
+from kungfu_chess.bus.event_bus import EventBus
+from kungfu_chess.bus.events import FrameTickEvent
 from kungfu_chess.graphics.game_window import GameWindow
 
 
@@ -61,14 +63,14 @@ class FakeImgCls:
         self.close_calls.append(window_name)
 
 
-def _build(clock_values, is_window_open_sequence=(), left_panel_width_px=0):
+def _build(clock_values, is_window_open_sequence=(), left_panel_width_px=0, bus=None):
     values = iter(clock_values)
     engine = FakeEngine()
     renderer = FakeRenderer(left_panel_width_px=left_panel_width_px)
     input_router = FakeInputRouter()
     img_cls = FakeImgCls(is_window_open_sequence)
     window = GameWindow(engine, renderer, input_router,
-                         clock=lambda: next(values), img_cls=img_cls)
+                         clock=lambda: next(values), img_cls=img_cls, bus=bus)
     return window, engine, renderer, input_router, img_cls
 
 
@@ -154,6 +156,31 @@ def test_a_simulated_non_left_button_event_is_ignored():
     captured_callback(event=999, x=1, y=1, flags=0, param=None)  # not LBUTTONDOWN
 
     assert input_router.on_mouse_down_calls == []
+
+
+def test_without_bus_step_behaves_exactly_as_before():
+    window, engine, renderer, input_router, img_cls = _build(clock_values=[1000])
+
+    window.step()
+
+    assert renderer.render_calls == [("a-snapshot-sentinel", 0)]
+
+
+def test_with_bus_frame_tick_event_is_published_alongside_the_direct_render_call():
+    bus = EventBus()
+    received = []
+    bus.subscribe(FrameTickEvent, received.append)
+    window, engine, renderer, input_router, img_cls = _build(clock_values=[1000, 1300], bus=bus)
+
+    window.step()
+    window.step()
+
+    # The direct render() call (dual path, not yet removed) still ran too.
+    assert renderer.render_calls == [("a-snapshot-sentinel", 0), ("a-snapshot-sentinel", 300)]
+    assert received == [
+        FrameTickEvent(snapshot="a-snapshot-sentinel", now_ms=0),
+        FrameTickEvent(snapshot="a-snapshot-sentinel", now_ms=300),
+    ]
 
 
 def test_run_calls_step_exactly_once_per_true_in_the_is_window_open_sequence():

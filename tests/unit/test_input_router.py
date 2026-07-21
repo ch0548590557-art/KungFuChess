@@ -1,6 +1,8 @@
 from kungfu_chess.model.board import Board
 from kungfu_chess.model.piece import Piece
 from kungfu_chess.model.position import Position
+from kungfu_chess.bus.event_bus import EventBus
+from kungfu_chess.bus.events import MoveRequestedEvent, JumpRequestedEvent
 from kungfu_chess.input.board_mapper import BoardMapper
 from kungfu_chess.input.controller import Controller
 from kungfu_chess.input.input_router import InputRouter
@@ -31,9 +33,14 @@ def build(board_offset=(0, 0), enabled=True, window_ms=300):
     board = Board(4, 4)
     board.add_piece(Piece(id=1, color='w', kind='R', cell=Position(0, 0)))
     engine = FakeGameEngine(board)
-    controller = Controller(BoardMapper(board), engine)
+    bus = EventBus()
+    # Mirrors real GameEngine's own self-subscription (engine/game_engine.py)
+    # so this fake still completes the full pipeline end-to-end over the bus.
+    bus.subscribe(MoveRequestedEvent, lambda event: engine.request_move(event.source, event.destination))
+    bus.subscribe(JumpRequestedEvent, lambda event: engine.request_jump(event.source))
+    controller = Controller(BoardMapper(board), engine, bus=bus)
     geometry = BoardGeometry(cell_size_px=100)
-    router = InputRouter(controller, geometry, board_offset=board_offset,
+    router = InputRouter(bus, geometry, board_offset=board_offset,
                           enabled=enabled, double_click_window_ms=window_ms)
     return router, controller, engine
 

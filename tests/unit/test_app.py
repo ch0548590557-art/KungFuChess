@@ -17,6 +17,7 @@ import io
 
 from kungfu_chess import app
 from kungfu_chess.app import build_game, run_cli
+from kungfu_chess.bus.event_bus import EventBus
 from kungfu_chess.io.board_parser import BoardParser
 from kungfu_chess.io.board_printer import BoardPrinter
 from kungfu_chess.input.board_mapper import BoardMapper
@@ -180,10 +181,11 @@ class _FakeGameWindow:
     during the test suite."""
     instances = []
 
-    def __init__(self, engine, renderer, input_router):
+    def __init__(self, engine, renderer, input_router, bus=None):
         self.engine = engine
         self.renderer = renderer
         self.input_router = input_router
+        self.bus = bus
         self.run_called = False
         _FakeGameWindow.instances.append(self)
 
@@ -205,6 +207,7 @@ def test_main_opens_a_real_game_window_when_stdin_is_a_terminal(monkeypatch):
     assert isinstance(window.engine, GameEngine)
     assert isinstance(window.renderer, GameRenderer)
     assert isinstance(window.input_router, InputRouter)
+    assert isinstance(window.bus, EventBus)
     # Sanity check that the real starting position was actually wired in.
     assert window.engine.board.width == 8
     assert window.engine.board.height == 8

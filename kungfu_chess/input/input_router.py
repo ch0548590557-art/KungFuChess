@@ -3,8 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
+from kungfu_chess.bus.event_bus import EventBus
+from kungfu_chess.bus.events import MouseClickEvent, MouseJumpEvent
 from kungfu_chess.graphics.board_geometry import BoardGeometry
-from kungfu_chess.input.controller import Controller
 import kungfu_chess.config as config
 
 
@@ -17,11 +18,11 @@ class _PendingClick:
 
 
 class InputRouter:
-    def __init__(self, controller: Controller, geometry: BoardGeometry,
+    def __init__(self, bus: EventBus, geometry: BoardGeometry,
                  board_offset: Tuple[int, int] = (0, 0),
                  enabled: bool = True,
                  double_click_window_ms: int = config.DOUBLE_CLICK_WINDOW_MS):
-        self._controller = controller
+        self._bus = bus
         self._geometry = geometry
         self._offset_x, self._offset_y = board_offset
         self.enabled = enabled
@@ -40,7 +41,7 @@ class InputRouter:
             same_cell = cell == self._pending.cell
             within_window = (now_ms - self._pending.time_ms) <= self._window_ms
             if same_cell and within_window:
-                self._controller.jump(board_x, board_y)
+                self._bus.publish(MouseJumpEvent(x=board_x, y=board_y))
                 self._pending = None
                 return
 
@@ -51,5 +52,5 @@ class InputRouter:
             return
 
         if (now_ms - self._pending.time_ms) > self._window_ms:
-            self._controller.click(self._pending.x, self._pending.y)
+            self._bus.publish(MouseClickEvent(x=self._pending.x, y=self._pending.y))
             self._pending = None
