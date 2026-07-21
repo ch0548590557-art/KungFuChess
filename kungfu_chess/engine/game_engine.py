@@ -48,6 +48,7 @@ in test failures.
 """
 
 from dataclasses import dataclass
+from typing import Optional
 
 from kungfu_chess.model.position import Position
 from kungfu_chess.model.board import Board
@@ -56,6 +57,8 @@ from kungfu_chess.rules.rule_engine import RuleEngine
 from kungfu_chess.rules import promotion_rules
 from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
 from kungfu_chess.engine import notation
+from kungfu_chess.bus.event_bus import EventBus
+from kungfu_chess.bus.events import MoveCompletedEvent
 import kungfu_chess.config as config
 
 
@@ -78,11 +81,13 @@ class GameSnapshot:
 
 class GameEngine:
     def __init__(self, board: Board, rule_engine: RuleEngine = None,
-                 arbiter: RealTimeArbiter = None, state: GameState = None):
+                 arbiter: RealTimeArbiter = None, state: GameState = None,
+                 bus: Optional[EventBus] = None):
         self._board = board
         self._rule_engine = rule_engine or RuleEngine()
         self._arbiter = arbiter or RealTimeArbiter()
         self._state = state or GameState()
+        self._bus = bus
         self._clock_ms = 0
         self._captures: list = []
         self._completed_moves: list = []
@@ -102,6 +107,8 @@ class GameEngine:
             return MoveResult(False, validation.reason)
 
         self._arbiter.start_motion(piece, destination, self._clock_ms)
+        if self._bus is not None:
+            self._bus.publish(MoveCompletedEvent(source=source, destination=destination))
         return MoveResult(True, "ok")
 
     def request_jump(self, source: Position) -> MoveResult:
@@ -134,6 +141,8 @@ class GameEngine:
             return MoveResult(False, "motion_in_progress")
 
         self._arbiter.start_jump(piece, self._clock_ms)
+        if self._bus is not None:
+            self._bus.publish(MoveCompletedEvent(source=source, destination=source, is_jump=True))
         return MoveResult(True, "ok")
 
     def wait(self, ms: int) -> None:
