@@ -15,18 +15,23 @@ from kungfu_chess.network.protocol import (
 
 
 def test_move_request_round_trip():
-    message = MoveRequest(source=Position(6, 4), destination=Position(4, 4))
+    message = MoveRequest(request_id="1", source=Position(6, 4), destination=Position(4, 4))
     assert protocol.decode(protocol.encode(message)) == message
 
 
 def test_jump_request_round_trip():
-    message = JumpRequest(source=Position(6, 4))
+    message = JumpRequest(request_id="2", source=Position(6, 4))
     assert protocol.decode(protocol.encode(message)) == message
 
 
 def test_error_round_trip():
-    message = Error(reason="wrong_color")
+    message = Error(reason="wrong_color", request_id="1")
     assert protocol.decode(protocol.encode(message)) == message
+
+
+def test_error_request_id_defaults_to_none_when_absent_from_the_payload():
+    message = protocol.decode('{"type": "error", "reason": "malformed_message"}')
+    assert message == Error(reason="malformed_message", request_id=None)
 
 
 def test_game_state_update_round_trip_with_full_fields():

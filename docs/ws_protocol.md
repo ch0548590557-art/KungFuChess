@@ -14,6 +14,15 @@ unrelated broadcast that happened to be scheduled first. A client must
 dispatch every incoming message by its `type` (and content), never by
 its position relative to something the client just sent.
 
+**`move_request`/`jump_request` carry a `request_id`.** An accepted
+request gets no direct reply at all (only the broadcast above); a
+rejected one gets an `error` with that same `request_id` echoed back, so
+a client with more than one request in flight at once (e.g. sent before
+the first resolved) can tell which one a given `error` is about.
+`request_id` is any string the client chooses - the server never
+interprets it, only copies it. `game_state_update` never carries one:
+it's a broadcast, not a reply to a specific request.
+
 A `Position` is always `{"row": int, "col": int}`.
 
 ## Client -> Server
@@ -21,13 +30,13 @@ A `Position` is always `{"row": int, "col": int}`.
 ### `move_request`
 
 ```json
-{"type": "move_request", "source": {"row": 6, "col": 4}, "destination": {"row": 4, "col": 4}}
+{"type": "move_request", "request_id": "3", "source": {"row": 6, "col": 4}, "destination": {"row": 4, "col": 4}}
 ```
 
 ### `jump_request`
 
 ```json
-{"type": "jump_request", "source": {"row": 6, "col": 4}}
+{"type": "jump_request", "request_id": "4", "source": {"row": 6, "col": 4}}
 ```
 
 ## Server -> Client
@@ -68,8 +77,13 @@ personalized per recipient: `"w"` or `"b"` for an assigned player,
 Sent only to the client whose request caused it - never broadcast.
 
 ```json
-{"type": "error", "reason": "wrong_color"}
+{"type": "error", "reason": "wrong_color", "request_id": "3"}
 ```
+
+`request_id` is the same value the triggering `move_request`/
+`jump_request` carried - `null` when the request couldn't be identified
+at all (a `malformed_message`/`unknown_message_type` failure means the
+payload may not have decoded far enough to recover it).
 
 Known `reason` values as of this branch: `malformed_message`,
 `unknown_message_type`, `spectators_cannot_move`, `wrong_color`, plus

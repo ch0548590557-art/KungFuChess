@@ -46,6 +46,20 @@ Position already exists as the project's value type for a board cell
 same vocabulary as GameEngine.request_move()/request_jump() instead of
 inventing a parallel (row, col) convention that would need translating
 at the boundary either way.
+
+WHY MoveRequest/JumpRequest CARRY A request_id (ADDED IN STEP 4):
+ClientCore's send_move()/send_jump() are fire-and-forget (no ack for an
+accepted request - see game_session.py, which only ever produces a
+direct reply for a *rejected* one). Without something identifying which
+request an Error is about, a client that has more than one request in
+flight at once (e.g. a double-click before the first resolves) cannot
+tell which of its requests was rejected - "one of your recent requests
+failed: reason=X" is not actionable. request_id (any client-chosen
+string; ClientCore uses a local incrementing counter) makes that
+determinable: GameSession only ever echoes it back verbatim onto the
+Error it returns to that same sender, never interprets it. GameStateUpdate
+does not get one - it is never a reply to a specific request, only a
+broadcast (see your_color's docstring above for the same reasoning).
 """
 
 import json
@@ -57,12 +71,14 @@ from kungfu_chess.model.position import Position
 
 @dataclass
 class MoveRequest:
+    request_id: str
     source: Position
     destination: Position
 
 
 @dataclass
 class JumpRequest:
+    request_id: str
     source: Position
 
 
@@ -145,6 +161,7 @@ class GameStateUpdate:
 @dataclass
 class Error:
     reason: str
+    request_id: Optional[str] = None  # echoed from the request that caused it, when known
 
 
 class UnknownMessageType(ValueError):
@@ -183,11 +200,15 @@ def decode(raw: str) -> Message:
 
     if cls is MoveRequest:
         return MoveRequest(
+            request_id=payload["request_id"],
             source=Position(**payload["source"]),
             destination=Position(**payload["destination"]),
         )
     if cls is JumpRequest:
-        return JumpRequest(source=Position(**payload["source"]))
+        return JumpRequest(
+            request_id=payload["request_id"],
+            source=Position(**payload["source"]),
+        )
     if cls is GameStateUpdate:
         return GameStateUpdate(
             board_width=payload["board_width"],

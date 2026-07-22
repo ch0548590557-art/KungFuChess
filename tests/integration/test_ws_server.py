@@ -98,7 +98,7 @@ def test_legal_move_broadcasts_updated_state_to_players_and_spectators():
                 spectator_welcome = await _welcome(spectator)
                 assert spectator_welcome.your_color is None
 
-                move = protocol.MoveRequest(source=Position(6, 4), destination=Position(4, 4))
+                move = protocol.MoveRequest(request_id="1", source=Position(6, 4), destination=Position(4, 4))
                 await white.send(protocol.encode(move))
 
                 # A successful request gets no direct reply (see
@@ -127,11 +127,11 @@ def test_illegal_move_returns_error_directly_to_the_sender():
                 await _welcome(white)
 
                 # A rook has no legal diagonal hop from its own starting cell.
-                move = protocol.MoveRequest(source=Position(7, 0), destination=Position(5, 2))
+                move = protocol.MoveRequest(request_id="1", source=Position(7, 0), destination=Position(5, 2))
                 await white.send(protocol.encode(move))
 
                 reply = await _recv_until(white, _is_error)
-                assert reply == protocol.Error(reason="illegal_piece_move")
+                assert reply == protocol.Error(reason="illegal_piece_move", request_id="1")
         finally:
             await _stop(server)
 
@@ -147,11 +147,11 @@ def test_moving_the_opponents_piece_returns_wrong_color():
                 await _welcome(white)
                 await _welcome(black)
 
-                move = protocol.MoveRequest(source=Position(1, 4), destination=Position(3, 4))
+                move = protocol.MoveRequest(request_id="1", source=Position(1, 4), destination=Position(3, 4))
                 await white.send(protocol.encode(move))
 
                 reply = await _recv_until(white, _is_error)
-                assert reply == protocol.Error(reason="wrong_color")
+                assert reply == protocol.Error(reason="wrong_color", request_id="1")
         finally:
             await _stop(server)
 
@@ -169,11 +169,11 @@ def test_spectator_move_request_is_rejected():
                 await _welcome(black)
                 await _welcome(spectator)
 
-                move = protocol.MoveRequest(source=Position(6, 4), destination=Position(4, 4))
+                move = protocol.MoveRequest(request_id="1", source=Position(6, 4), destination=Position(4, 4))
                 await spectator.send(protocol.encode(move))
 
                 reply = await _recv_until(spectator, _is_error)
-                assert reply == protocol.Error(reason="spectators_cannot_move")
+                assert reply == protocol.Error(reason="spectators_cannot_move", request_id="1")
         finally:
             await _stop(server)
 
@@ -187,7 +187,7 @@ def test_tick_loop_lands_an_accepted_motion_without_any_further_client_message()
             async with websockets.connect(uri) as white:
                 await _welcome(white)
 
-                move = protocol.MoveRequest(source=Position(6, 4), destination=Position(4, 4))
+                move = protocol.MoveRequest(request_id="1", source=Position(6, 4), destination=Position(4, 4))
                 await white.send(protocol.encode(move))
 
                 await _recv_until(white, _has_in_flight_motion)

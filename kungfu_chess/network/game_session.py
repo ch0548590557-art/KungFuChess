@@ -110,38 +110,45 @@ class GameSession:
             return protocol.Error(reason="malformed_message")
 
         if isinstance(message, protocol.MoveRequest):
-            return self._handle_move(session, message.source, message.destination)
+            return self._handle_move(session, message)
         if isinstance(message, protocol.JumpRequest):
-            return self._handle_jump(session, message.source)
+            return self._handle_jump(session, message)
         # Syntactically valid and a recognized type, but not one a client
         # is ever supposed to send (GameStateUpdate/Error are server->
-        # client only).
+        # client only) - no request_id to echo, since this isn't even a
+        # request type.
         return protocol.Error(reason="unknown_message_type")
 
-    def _handle_move(self, session, source, destination) -> Optional[protocol.Error]:
-        rejection = self._check_permission(session, source)
-        if rejection is not None:
-            return rejection
-        result = self._engine.request_move(source, destination)
-        if not result.is_accepted:
-            return protocol.Error(reason=result.reason)
-        return None
+    def _handle_move(self, session: Session, message: protocol.MoveRequest) -> Optional[protocol.Error]:
+        reason = self._check_permission(session, message.source)
+        if reason is None:
+            result = self._engine.request_move(message.source, message.destination)
+            if not result.is_accepted:
+                reason = result.reason
+        if reason is None:
+            return None
+        return protocol.Error(reason=reason, request_id=message.request_id)
 
-    def _handle_jump(self, session, source) -> Optional[protocol.Error]:
-        rejection = self._check_permission(session, source)
-        if rejection is not None:
-            return rejection
-        result = self._engine.request_jump(source)
-        if not result.is_accepted:
-            return protocol.Error(reason=result.reason)
-        return None
+    def _handle_jump(self, session: Session, message: protocol.JumpRequest) -> Optional[protocol.Error]:
+        reason = self._check_permission(session, message.source)
+        if reason is None:
+            result = self._engine.request_jump(message.source)
+            if not result.is_accepted:
+                reason = result.reason
+        if reason is None:
+            return None
+        return protocol.Error(reason=reason, request_id=message.request_id)
 
-    def _check_permission(self, session: Session, source) -> Optional[protocol.Error]:
+    def _check_permission(self, session: Session, source) -> Optional[str]:
+        """Returns a rejection reason string, or None if the sender is
+        allowed to act on `source` (existence/color of the piece there
+        is still GameEngine's own call - a permission check only answers
+        who this session is, never whether the eventual move is legal)."""
         if session.role is PlayerRole.SPECTATOR:
-            return protocol.Error(reason="spectators_cannot_move")
+            return "spectators_cannot_move"
         piece = self._engine.board.piece_at(source)
         if piece is not None and piece.color != session.color:
-            return protocol.Error(reason="wrong_color")
+            return "wrong_color"
         return None
 
     def tick(self, ms: int) -> None:
