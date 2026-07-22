@@ -1,17 +1,29 @@
 """
-WebSocketServer: Step 1 of the single-process transport - accept
-connections on a plain WebSocket and echo back whatever each client
-sends. There is no game wiring yet (no EventBus, no GameEngine); this
-class only has to prove the transport itself can hold multiple
-concurrent client connections on localhost before any protocol or game
-logic is layered on top of it.
+WebSocketServer: accepts connections on a plain WebSocket. Step 1 proved
+the transport itself can hold multiple concurrent client connections
+(pure echo, no game awareness at all). Step 2 (this revision) adds one
+thing on top of that: each connection is registered with a
+SessionManager and assigned a role (WHITE/BLACK/SPECTATOR) by arrival
+order, and a SPECTATOR's MoveRequest/JumpRequest is rejected with an
+Error before anything else happens to it.
 
-WHY ECHO INSTEAD OF A NO-OP HANDLER:
-A handler that does nothing would still prove "the server accepts
-connections", but not "each connection can independently send and
-receive" - echo is the smallest behavior that exercises both directions
-of the socket per client, which is what the concurrent-clients test
-needs to observe.
+WHY EVERYTHING THAT ISN'T A REJECTED SPECTATOR MOVE STILL JUST ECHOES:
+There is still no GameEngine/EventBus wiring - that is Step 3's job
+(see the module docstring this will grow when _echo_handler is replaced
+outright). Step 2 only needs to prove role assignment and the
+spectator-rejection rule; teaching this handler to actually route
+MoveRequest/JumpRequest into a real game would be scope creep ahead of
+Step 3, which owns that replacement.
+
+WHY THE SPECTATOR CHECK DECODES THE MESSAGE BUT DOESN'T ROUTE IT
+ANYWHERE ON SUCCESS:
+protocol.decode() is only consulted here to answer "is this a
+MoveRequest/JumpRequest from a spectator" - a session-permission
+question SessionManager already has everything it needs to answer
+without GameEngine. A message that isn't a rejected spectator move
+(including one that fails to decode at all) falls through to the same
+echo behavior Step 1 had; Step 3 is what teaches this handler to do
+something game-aware with a legitimate player's message.
 
 WHY PORT 0 IS THE DEFAULT FOR TESTS RATHER THAN A FIXED PORT:
 Binding to port 0 asks the OS to pick a free ephemeral port, so tests
@@ -23,13 +35,13 @@ import asyncio
 
 import websockets
 
+from kungfu_chess.network import protocol
+from kungfu_chess.network.session import PlayerRole, SessionManager
+
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 8765
 
-
-async def _echo_handler(websocket) -> None:
-    async for message in websocket:
-        await websocket.send(message)
+_SPECTATOR_REJECTED_TYPES = (protocol.MoveRequest, protocol.JumpRequest)
 
 
 class WebSocketServer:
@@ -37,10 +49,31 @@ class WebSocketServer:
         self._host = host
         self._port = port
         self._server = None
+        self._sessions = SessionManager()
 
     async def start(self) -> "WebSocketServer":
-        self._server = await websockets.serve(_echo_handler, self._host, self._port)
+        self._server = await websockets.serve(self._handle_connection, self._host, self._port)
         return self
+
+    async def _handle_connection(self, websocket) -> None:
+        session = self._sessions.register_connection(websocket)
+        try:
+            async for raw in websocket:
+                if session.role is PlayerRole.SPECTATOR and self._is_move_or_jump(raw):
+                    await websocket.send(protocol.encode(
+                        protocol.Error(reason="spectators_cannot_move")
+                    ))
+                    continue
+                await websocket.send(raw)
+        finally:
+            self._sessions.unregister_connection(websocket)
+
+    @staticmethod
+    def _is_move_or_jump(raw: str) -> bool:
+        try:
+            return isinstance(protocol.decode(raw), _SPECTATOR_REJECTED_TYPES)
+        except (ValueError, KeyError, TypeError, AttributeError):
+            return False
 
     @property
     def port(self) -> int:
