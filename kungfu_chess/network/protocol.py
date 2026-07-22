@@ -147,6 +147,16 @@ class Error:
     reason: str
 
 
+class UnknownMessageType(ValueError):
+    """Raised by decode() specifically when payload["type"] doesn't match
+    any known message type - narrower than a malformed/incomplete payload
+    for an otherwise-recognized type, so a caller (GameSession) can tell
+    the two apart and report the distinct Error reasons documented in
+    docs/ws_protocol.md (unknown_message_type vs malformed_message).
+    Subclasses ValueError so existing `except ValueError` callers still
+    catch it without changes."""
+
+
 Message = Union[MoveRequest, JumpRequest, GameStateUpdate, Error]
 
 _TYPE_NAMES = {
@@ -169,7 +179,7 @@ def decode(raw: str) -> Message:
     msg_type = payload.pop("type", None)
     cls = _NAMES_TO_TYPE.get(msg_type)
     if cls is None:
-        raise ValueError(f"unknown message type: {msg_type!r}")
+        raise UnknownMessageType(f"unknown message type: {msg_type!r}")
 
     if cls is MoveRequest:
         return MoveRequest(

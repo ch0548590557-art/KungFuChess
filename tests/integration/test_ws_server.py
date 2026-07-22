@@ -7,94 +7,201 @@ from kungfu_chess.network import protocol
 from kungfu_chess.network.ws_server import WebSocketServer
 
 
-def test_two_clients_connect_concurrently_and_are_echoed_independently():
+async def _start(**kwargs):
+    server = await WebSocketServer(port=0, **kwargs).start()
+    return server, f"ws://localhost:{server.port}"
+
+
+async def _stop(server):
+    server.close()
+    await server.wait_closed()
+
+
+async def _welcome(connection) -> protocol.GameStateUpdate:
+    """Every connection's first message is a personalized GameStateUpdate
+    (see ws_server.py: sent immediately on connect so a client learns its
+    color without waiting for the first tick)."""
+    return protocol.decode(await connection.recv())
+
+
+async def _recv_until(connection, predicate, timeout: float = 5.0):
+    """Read messages off `connection` until one satisfies `predicate`,
+    skipping any that don't.
+
+    WHY THIS EXISTS INSTEAD OF JUST `protocol.decode(await connection.recv())`:
+    The tick loop's periodic broadcast (ws_server.py, ~20Hz) and a direct
+    reply to a specific request (an Error, or the broadcast a completed
+    move triggers) are sent via independent websocket.send() calls that
+    race each other on the server side - discovered via a genuinely flaky
+    test run where a spectator's Error reply arrived *after* an unrelated
+    tick broadcast. A real client has the exact same problem and must
+    dispatch by message content/type, never by "the next message must be
+    the reply to what I just sent" - this helper is what a correct
+    client (and Step 4's ClientCore) needs to do too.
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise AssertionError("timed out waiting for a message matching the predicate")
+        message = protocol.decode(await asyncio.wait_for(connection.recv(), timeout=remaining))
+        if predicate(message):
+            return message
+
+
+def _is_error(message) -> bool:
+    return isinstance(message, protocol.Error)
+
+
+def _has_in_flight_motion(message) -> bool:
+    return isinstance(message, protocol.GameStateUpdate) and len(message.motions) == 1
+
+
+def test_two_clients_connect_concurrently_and_each_learns_its_own_color():
     async def scenario():
-        server = await WebSocketServer(port=0).start()
-        uri = f"ws://localhost:{server.port}"
+        server, uri = await _start()
         try:
-            async with websockets.connect(uri) as client_a, \
-                    websockets.connect(uri) as client_b:
-                # Both sockets are open at once - interleave sends so a
-                # broken second connection (or a server that only serves
-                # one client at a time) would show up as a hang or a
-                # wrong echo here.
-                await client_a.send("hello from A")
-                await client_b.send("hello from B")
+            async with websockets.connect(uri) as first, \
+                    websockets.connect(uri) as second:
+                first_welcome = await _welcome(first)
+                second_welcome = await _welcome(second)
 
-                echo_a = await client_a.recv()
-                echo_b = await client_b.recv()
-
-                assert echo_a == "hello from A"
-                assert echo_b == "hello from B"
-
-                # Round-trip again on both to prove neither connection
-                # was a one-shot fluke.
-                await client_b.send("second message from B")
-                assert await client_b.recv() == "second message from B"
-
-                await client_a.send("second message from A")
-                assert await client_a.recv() == "second message from A"
+                assert first_welcome.your_color == "w"
+                assert second_welcome.your_color == "b"
         finally:
-            server.close()
-            await server.wait_closed()
+            await _stop(server)
 
     asyncio.run(scenario())
 
 
 def test_server_reports_its_bound_port_when_started_on_port_zero():
     async def scenario():
-        server = await WebSocketServer(port=0).start()
+        server, _ = await _start()
         try:
             assert server.port != 0
         finally:
-            server.close()
-            await server.wait_closed()
+            await _stop(server)
 
     asyncio.run(scenario())
 
 
-def test_third_connection_is_a_spectator_and_its_move_request_is_rejected():
+def test_legal_move_broadcasts_updated_state_to_players_and_spectators():
     async def scenario():
-        server = await WebSocketServer(port=0).start()
-        uri = f"ws://localhost:{server.port}"
+        server, uri = await _start()
         try:
             async with websockets.connect(uri) as white, \
                     websockets.connect(uri) as black, \
                     websockets.connect(uri) as spectator:
-                move = protocol.MoveRequest(
-                    source=Position(6, 4), destination=Position(4, 4),
-                )
-                await spectator.send(protocol.encode(move))
-                reply = protocol.decode(await spectator.recv())
+                await _welcome(white)
+                await _welcome(black)
+                spectator_welcome = await _welcome(spectator)
+                assert spectator_welcome.your_color is None
 
-                assert reply == protocol.Error(reason="spectators_cannot_move")
-
-                # White/Black are still on Step 2's plain echo path (no
-                # GameEngine wiring until Step 3) - sending the same
-                # message type from an assigned player must NOT be
-                # rejected the way the spectator's was.
+                move = protocol.MoveRequest(source=Position(6, 4), destination=Position(4, 4))
                 await white.send(protocol.encode(move))
-                echoed = protocol.decode(await white.recv())
-                assert echoed == move
+
+                # A successful request gets no direct reply (see
+                # game_session.py: None means "accepted") - all three
+                # connections instead receive the broadcast the accepted
+                # move triggers, possibly interleaved with an unrelated
+                # tick-loop broadcast that still shows no motion yet.
+                white_update = await _recv_until(white, _has_in_flight_motion)
+                black_update = await _recv_until(black, _has_in_flight_motion)
+                spectator_update = await _recv_until(spectator, _has_in_flight_motion)
+
+                for update in (white_update, black_update, spectator_update):
+                    assert update.motions[0].source == Position(6, 4)
+                    assert update.motions[0].destination == Position(4, 4)
         finally:
-            server.close()
-            await server.wait_closed()
+            await _stop(server)
 
     asyncio.run(scenario())
 
 
-def test_non_move_messages_still_echo_regardless_of_role():
+def test_illegal_move_returns_error_directly_to_the_sender():
     async def scenario():
-        server = await WebSocketServer(port=0).start()
-        uri = f"ws://localhost:{server.port}"
+        server, uri = await _start()
+        try:
+            async with websockets.connect(uri) as white:
+                await _welcome(white)
+
+                # A rook has no legal diagonal hop from its own starting cell.
+                move = protocol.MoveRequest(source=Position(7, 0), destination=Position(5, 2))
+                await white.send(protocol.encode(move))
+
+                reply = await _recv_until(white, _is_error)
+                assert reply == protocol.Error(reason="illegal_piece_move")
+        finally:
+            await _stop(server)
+
+    asyncio.run(scenario())
+
+
+def test_moving_the_opponents_piece_returns_wrong_color():
+    async def scenario():
+        server, uri = await _start()
+        try:
+            async with websockets.connect(uri) as white, \
+                    websockets.connect(uri) as black:
+                await _welcome(white)
+                await _welcome(black)
+
+                move = protocol.MoveRequest(source=Position(1, 4), destination=Position(3, 4))
+                await white.send(protocol.encode(move))
+
+                reply = await _recv_until(white, _is_error)
+                assert reply == protocol.Error(reason="wrong_color")
+        finally:
+            await _stop(server)
+
+    asyncio.run(scenario())
+
+
+def test_spectator_move_request_is_rejected():
+    async def scenario():
+        server, uri = await _start()
         try:
             async with websockets.connect(uri) as white, \
                     websockets.connect(uri) as black, \
                     websockets.connect(uri) as spectator:
-                await spectator.send("just some text, not a protocol message")
-                assert await spectator.recv() == "just some text, not a protocol message"
+                await _welcome(white)
+                await _welcome(black)
+                await _welcome(spectator)
+
+                move = protocol.MoveRequest(source=Position(6, 4), destination=Position(4, 4))
+                await spectator.send(protocol.encode(move))
+
+                reply = await _recv_until(spectator, _is_error)
+                assert reply == protocol.Error(reason="spectators_cannot_move")
         finally:
-            server.close()
-            await server.wait_closed()
+            await _stop(server)
+
+    asyncio.run(scenario())
+
+
+def test_tick_loop_lands_an_accepted_motion_without_any_further_client_message():
+    async def scenario():
+        server, uri = await _start(tick_ms=100)
+        try:
+            async with websockets.connect(uri) as white:
+                await _welcome(white)
+
+                move = protocol.MoveRequest(source=Position(6, 4), destination=Position(4, 4))
+                await white.send(protocol.encode(move))
+
+                await _recv_until(white, _has_in_flight_motion)
+
+                # Nothing else is sent from here on - only the server's
+                # own tick loop can make the motion arrive.
+                landed = await _recv_until(
+                    white,
+                    lambda m: isinstance(m, protocol.GameStateUpdate) and not m.motions,
+                )
+                assert any(
+                    p.row == 4 and p.col == 4 and p.kind == "P" for p in landed.pieces
+                )
+        finally:
+            await _stop(server)
 
     asyncio.run(scenario())

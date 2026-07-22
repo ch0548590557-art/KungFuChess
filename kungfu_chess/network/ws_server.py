@@ -1,29 +1,38 @@
 """
-WebSocketServer: accepts connections on a plain WebSocket. Step 1 proved
-the transport itself can hold multiple concurrent client connections
-(pure echo, no game awareness at all). Step 2 (this revision) adds one
-thing on top of that: each connection is registered with a
-SessionManager and assigned a role (WHITE/BLACK/SPECTATOR) by arrival
-order, and a SPECTATOR's MoveRequest/JumpRequest is rejected with an
-Error before anything else happens to it.
+WebSocketServer: the real game-aware transport (Step 3 replaces Steps
+1/2's plain-echo path entirely - there is no echo fallback left). It
+decodes nothing itself and knows nothing about chess: every client
+message is handed to GameSession.handle_message(), and every broadcast
+is built by GameSession.state_update_for(). Its only two jobs are (1)
+own the actual sockets and (2) decide *when* to broadcast.
 
-WHY EVERYTHING THAT ISN'T A REJECTED SPECTATOR MOVE STILL JUST ECHOES:
-There is still no GameEngine/EventBus wiring - that is Step 3's job
-(see the module docstring this will grow when _echo_handler is replaced
-outright). Step 2 only needs to prove role assignment and the
-spectator-rejection rule; teaching this handler to actually route
-MoveRequest/JumpRequest into a real game would be scope creep ahead of
-Step 3, which owns that replacement.
+TWO THINGS DRIVE A BROADCAST TO EVERY CONNECTED CLIENT:
+1. An accepted MoveRequest/JumpRequest - GameSession's MoveCompletedEvent
+   subscription (see game_session.py) calls back into
+   _schedule_broadcast() synchronously, from inside the same coroutine
+   that received the client's message, so acceptance is reflected
+   immediately rather than waiting for the next tick.
+2. A fixed ~20Hz tick loop that advances GameEngine's simulated clock
+   (engine.wait()) so in-flight motions actually arrive - captures,
+   promotions, and game-over all happen at *arrival* time (Section 10),
+   which nothing but a running clock can ever reach. Without this loop,
+   an accepted move would sit "in flight" forever (see this branch's
+   Step 3 architecture note on why GameEngine.wait() must be driven by
+   something in a headless server, unlike the local GUI's per-frame
+   GameWindow.run() -> engine.wait(delta_ms)).
 
-WHY THE SPECTATOR CHECK DECODES THE MESSAGE BUT DOESN'T ROUTE IT
-ANYWHERE ON SUCCESS:
-protocol.decode() is only consulted here to answer "is this a
-MoveRequest/JumpRequest from a spectator" - a session-permission
-question SessionManager already has everything it needs to answer
-without GameEngine. A message that isn't a rejected spectator move
-(including one that fails to decode at all) falls through to the same
-echo behavior Step 1 had; Step 3 is what teaches this handler to do
-something game-aware with a legitimate player's message.
+WHY THE TICK LOOP BROADCASTS UNCONDITIONALLY EVERY TICK RATHER THAN ONLY
+ON CHANGE:
+Detecting "did anything change" would mean either diffing snapshots or
+teaching GameEngine to report it - both add complexity this
+single-process, two-client branch doesn't need yet. An unconditional
+~20Hz broadcast is the smallest thing that keeps every connected
+client's board eventually consistent with the server's.
+
+WHY THE SERVER SENDS ONE GameStateUpdate IMMEDIATELY ON CONNECT:
+So a client learns its assigned color (GameStateUpdate.your_color)
+right away instead of waiting up to one tick interval for the first
+scheduled broadcast.
 
 WHY PORT 0 IS THE DEFAULT FOR TESTS RATHER THAN A FIXED PORT:
 Binding to port 0 asks the OS to pick a free ephemeral port, so tests
@@ -36,56 +45,84 @@ import asyncio
 import websockets
 
 from kungfu_chess.network import protocol
-from kungfu_chess.network.session import PlayerRole, SessionManager
+from kungfu_chess.network.game_session import GameSession, TICK_MS
 
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 8765
 
-_SPECTATOR_REJECTED_TYPES = (protocol.MoveRequest, protocol.JumpRequest)
-
 
 class WebSocketServer:
-    def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT):
+    def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
+                 tick_ms: int = TICK_MS):
         self._host = host
         self._port = port
+        self._tick_ms = tick_ms
         self._server = None
-        self._sessions = SessionManager()
+        self._tick_task = None
+        self._game = GameSession()
+        self._game.on_move_completed(self._schedule_broadcast)
+        self._connections = {}  # websocket -> Session
 
     async def start(self) -> "WebSocketServer":
         self._server = await websockets.serve(self._handle_connection, self._host, self._port)
+        self._tick_task = asyncio.ensure_future(self._tick_loop())
         return self
-
-    async def _handle_connection(self, websocket) -> None:
-        session = self._sessions.register_connection(websocket)
-        try:
-            async for raw in websocket:
-                if session.role is PlayerRole.SPECTATOR and self._is_move_or_jump(raw):
-                    await websocket.send(protocol.encode(
-                        protocol.Error(reason="spectators_cannot_move")
-                    ))
-                    continue
-                await websocket.send(raw)
-        finally:
-            self._sessions.unregister_connection(websocket)
-
-    @staticmethod
-    def _is_move_or_jump(raw: str) -> bool:
-        try:
-            return isinstance(protocol.decode(raw), _SPECTATOR_REJECTED_TYPES)
-        except (ValueError, KeyError, TypeError, AttributeError):
-            return False
 
     @property
     def port(self) -> int:
         return self._server.sockets[0].getsockname()[1]
 
     def close(self) -> None:
+        if self._tick_task is not None:
+            self._tick_task.cancel()
         if self._server is not None:
             self._server.close()
 
     async def wait_closed(self) -> None:
         if self._server is not None:
             await self._server.wait_closed()
+
+    async def _handle_connection(self, websocket) -> None:
+        session = self._game.connect(websocket)
+        self._connections[websocket] = session
+        try:
+            await websocket.send(protocol.encode(self._game.state_update_for(session)))
+            async for raw in websocket:
+                reply = self._game.handle_message(session, raw)
+                if reply is not None:
+                    await websocket.send(protocol.encode(reply))
+        finally:
+            self._game.disconnect(websocket)
+            del self._connections[websocket]
+
+    def _schedule_broadcast(self) -> None:
+        """GameSession's MoveCompletedEvent subscriber calls this
+        synchronously (EventBus.publish() is sync) from inside
+        engine.request_move()/request_jump(), itself called synchronously
+        from inside _handle_connection()'s message loop - so a broadcast
+        can only be *scheduled* here as a new task, never awaited
+        directly (this function isn't async; blocking the publisher
+        would make GameEngine implicitly async, which it must never
+        become)."""
+        asyncio.ensure_future(self._broadcast())
+
+    async def _tick_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(self._tick_ms / 1000)
+                self._game.tick(self._tick_ms)
+                await self._broadcast()
+        except asyncio.CancelledError:
+            pass
+
+    async def _broadcast(self) -> None:
+        if not self._connections:
+            return
+        await asyncio.gather(
+            *(ws.send(protocol.encode(self._game.state_update_for(session)))
+              for ws, session in self._connections.items()),
+            return_exceptions=True,
+        )
 
 
 async def _run_forever(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:

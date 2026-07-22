@@ -4,6 +4,16 @@ Every message is a single JSON object per WebSocket text frame, tagged
 with a `"type"` field. Implemented in `kungfu_chess/network/protocol.py`
 (`encode`/`decode`).
 
+**Message order is not a reply contract.** The server broadcasts
+`game_state_update` on a fixed ~20Hz tick *and* immediately after any
+accepted move, independently of replying to a specific client's request
+(`error`, when a request is rejected). These two sources race each
+other, so the very next message a client receives after sending a
+request is **not guaranteed** to be that request's reply - it may be an
+unrelated broadcast that happened to be scheduled first. A client must
+dispatch every incoming message by its `type` (and content), never by
+its position relative to something the client just sent.
+
 A `Position` is always `{"row": int, "col": int}`.
 
 ## Client -> Server
