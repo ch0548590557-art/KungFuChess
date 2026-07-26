@@ -18,13 +18,21 @@ already use elsewhere in this project. Piece tokens (e.g. "wK", "bP")
 match BoardPrinter's own format for the same reason: no new convention
 to learn if you've already used `print board` in the CLI grader.
 
-WHY stdin IS READ VIA run_in_executor(None, input) INSTEAD OF SOME
-ASYNC-NATIVE INPUT LIBRARY:
-input() blocks a thread, not the event loop, when run through
-run_in_executor - that's enough to let ClientCore's background listen
-task keep dispatching incoming broadcasts (so the board updates live,
-even while waiting on the next typed command) without pulling in an
-extra dependency (e.g. aioconsole) for a manual-testing-only script.
+WHY stdin IS READ VIA run_in_executor(None, sys.stdin.readline) INSTEAD
+OF SOME ASYNC-NATIVE INPUT LIBRARY, AND NOT VIA THE BUILTIN input():
+Reading in a worker thread (rather than blocking the event loop) is
+what lets ClientCore's background listen task keep dispatching incoming
+broadcasts - so the board updates live even while waiting on the next
+typed command - without pulling in an extra dependency (e.g.
+aioconsole) for a manual-testing-only script. The first version of this
+file used run_in_executor(None, input, "> "), which looked like the
+obvious way to get that same thread-not-loop blocking; running it
+against a real server (not just in-process tests) reproduced
+`RuntimeError: input(): lost sys.stdin` - CPython's input() goes
+through PyOS_Readline, which doesn't tolerate being called outside the
+main thread. sys.stdin.readline() is a plain buffered read with no such
+restriction, so the prompt is printed separately instead of relying on
+input()'s built-in prompt argument.
 """
 
 import asyncio
@@ -57,16 +65,37 @@ def _parse_position(token: str) -> Position:
     return Position(int(row_str), int(col_str))
 
 
+def _should_reprint(previous, current: GameStateUpdate) -> bool:
+    """The server broadcasts on a fixed ~20Hz tick regardless of whether
+    anything changed (ws_server.py's own design choice - see its module
+    docstring). Printing every single one would flood the terminal with
+    dozens of identical board dumps per second even while nothing is
+    happening - discovered by actually running this against a real
+    server rather than assuming. GameStateUpdate is a plain dataclass, so
+    equality already compares every field (pieces, motions, game_over,
+    your_color, ...); an in-flight motion's (start_time_ms,
+    arrival_time_ms) don't change tick to tick either; so this only
+    lets a genuinely new state (a move started, arrived, or the game
+    ended) through."""
+    return current != previous
+
+
 async def _read_command() -> str:
+    print("> ", end="", flush=True)
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, input, "> ")
+    line = await loop.run_in_executor(None, sys.stdin.readline)
+    return line.rstrip("\n")
 
 
 async def _run(uri: str) -> None:
     client = ClientCore(uri)
+    last_printed: "GameStateUpdate | None" = None
 
     def _on_state_update(update: GameStateUpdate) -> None:
-        print("\n" + _render(update))
+        nonlocal last_printed
+        if _should_reprint(last_printed, update):
+            last_printed = update
+            print("\n" + _render(update))
 
     def _on_error(error: Error, request: "SentRequest | None") -> None:
         print(f"\n[error] reason={error.reason} request_id={error.request_id}")
@@ -85,14 +114,20 @@ async def _run(uri: str) -> None:
                 break
             parts = line.split()
             try:
-                if parts[0] == "move" and len(parts) == 3:
-                    await client.send_move(_parse_position(parts[1]), _parse_position(parts[2]))
-                elif parts[0] == "jump" and len(parts) == 2:
-                    await client.send_jump(_parse_position(parts[1]))
+                if parts[0] == "move":
+                    if len(parts) != 3:
+                        print("usage: move <src_row>,<src_col> <dst_row>,<dst_col>  e.g. move 6,4 4,4")
+                    else:
+                        await client.send_move(_parse_position(parts[1]), _parse_position(parts[2]))
+                elif parts[0] == "jump":
+                    if len(parts) != 2:
+                        print("usage: jump <row>,<col>  e.g. jump 6,4")
+                    else:
+                        await client.send_jump(_parse_position(parts[1]))
                 else:
-                    print("unrecognized command")
-            except (IndexError, ValueError):
-                print("bad coordinates - expected e.g. 'move 6,4 4,4'")
+                    print(f"unrecognized command: {parts[0]!r} (try: move / jump / quit)")
+            except ValueError:
+                print("bad coordinates - expected e.g. '6,4'")
     finally:
         await client.close()
 

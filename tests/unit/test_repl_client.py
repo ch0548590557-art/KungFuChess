@@ -1,6 +1,6 @@
 from kungfu_chess.model.position import Position
 from kungfu_chess.network.protocol import GameStateUpdate, MotionInfo, PieceInfo
-from kungfu_chess.network.repl_client import _parse_position, _render
+from kungfu_chess.network.repl_client import _parse_position, _render, _should_reprint
 
 
 def test_parse_position():
@@ -43,3 +43,19 @@ def test_render_shows_winner_when_game_is_over():
     text = _render(update)
     assert "game_over=True" in text
     assert "winner=w" in text
+
+
+def test_should_not_reprint_an_identical_tick_broadcast():
+    """The server broadcasts ~20 times/second regardless of whether
+    anything changed - discovered as a real terminal-flooding bug when
+    actually running this against a live server (dozens of identical
+    board dumps per second while nothing was happening)."""
+    update = GameStateUpdate(board_width=1, board_height=1, pieces=[], game_over=False)
+    assert _should_reprint(None, update) is True  # first update always prints
+    assert _should_reprint(update, update) is False
+
+
+def test_should_reprint_when_the_state_actually_changes():
+    before = GameStateUpdate(board_width=1, board_height=1, pieces=[], game_over=False)
+    after = GameStateUpdate(board_width=1, board_height=1, pieces=[], game_over=True, winner="w")
+    assert _should_reprint(before, after) is True
