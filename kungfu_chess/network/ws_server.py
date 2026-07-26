@@ -38,6 +38,16 @@ WHY PORT 0 IS THE DEFAULT FOR TESTS RATHER THAN A FIXED PORT:
 Binding to port 0 asks the OS to pick a free ephemeral port, so tests
 never collide with each other or with a real server the user may already
 have running on the well-known default port.
+
+WHY EVERY CONNECT/DISCONNECT IS PRINTED:
+Discovered while manually playtesting (2026-07-22): a human juggling
+several terminal windows has no other way to tell how many clients are
+actually connected right now, or which role a given terminal got - a
+stray disconnected client silently frees its color, and the next
+connection quietly claims it (see session.py), which looks identical to
+"the server assigned the wrong role" from the outside. This line is the
+cheapest way to make that state observable without building a real
+admin/monitoring surface.
 """
 
 import asyncio
@@ -85,6 +95,8 @@ class WebSocketServer:
     async def _handle_connection(self, websocket) -> None:
         session = self._game.connect(websocket)
         self._connections[websocket] = session
+        print(f"[connect] role={session.role.name} color={session.color} "
+              f"connections={len(self._connections)}")
         try:
             await websocket.send(protocol.encode(self._game.state_update_for(session)))
             async for raw in websocket:
@@ -94,6 +106,8 @@ class WebSocketServer:
         finally:
             self._game.disconnect(websocket)
             del self._connections[websocket]
+            print(f"[disconnect] role={session.role.name} color={session.color} "
+                  f"connections={len(self._connections)}")
 
     def _schedule_broadcast(self) -> None:
         """GameSession's MoveCompletedEvent subscriber calls this

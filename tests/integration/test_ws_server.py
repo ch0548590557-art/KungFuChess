@@ -205,3 +205,23 @@ def test_tick_loop_lands_an_accepted_motion_without_any_further_client_message()
             await _stop(server)
 
     asyncio.run(scenario())
+
+
+def test_connect_and_disconnect_are_logged_with_role_and_connection_count(capsys):
+    async def scenario():
+        server, uri = await _start()
+        try:
+            async with websockets.connect(uri) as first:
+                await _welcome(first)
+                async with websockets.connect(uri) as second:
+                    await _welcome(second)
+        finally:
+            await _stop(server)
+
+    asyncio.run(scenario())
+
+    out = capsys.readouterr().out
+    assert "[connect] role=WHITE color=w connections=1" in out
+    assert "[connect] role=BLACK color=b connections=2" in out
+    assert "[disconnect] role=BLACK color=b connections=1" in out
+    assert "[disconnect] role=WHITE color=w connections=0" in out
