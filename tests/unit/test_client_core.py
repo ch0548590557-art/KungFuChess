@@ -1,6 +1,9 @@
+import pytest
+
 from kungfu_chess.model.position import Position
 from kungfu_chess.network import protocol
 from kungfu_chess.network.client_core import ClientCore, SentRequest
+from kungfu_chess.network.login_prompt import LoginPrompt
 
 
 def _update(your_color=None):
@@ -88,3 +91,43 @@ def test_error_matching_a_pending_request_id_is_correlated_and_popped():
 
     assert seen == [(protocol.Error(reason="illegal_piece_move", request_id="5"), pending)]
     assert "5" not in client._pending_requests
+
+
+class _FakeLoginPrompt(LoginPrompt):
+    def __init__(self, username: str):
+        self._username = username
+
+    def get_username(self) -> str:
+        return self._username
+
+
+def test_prepare_login_stores_and_returns_the_username():
+    client = ClientCore("ws://unused", login_prompt=_FakeLoginPrompt("chani"))
+
+    result = client.prepare_login()
+
+    assert result == "chani"
+    assert client.username == "chani"
+
+
+def test_prepare_login_without_a_login_prompt_raises():
+    client = ClientCore("ws://unused")
+
+    with pytest.raises(RuntimeError):
+        client.prepare_login()
+
+
+def test_prepare_login_never_calls_anything_but_get_username():
+    """ClientCore must only ever call get_username() on the injected
+    LoginPrompt - it has no business knowing anything else about it
+    (e.g. that it's shell-based)."""
+
+    class _StrictLoginPrompt(LoginPrompt):
+        def get_username(self) -> str:
+            return "chani"
+
+        def __getattr__(self, name):
+            raise AssertionError(f"ClientCore touched unexpected attribute: {name}")
+
+    client = ClientCore("ws://unused", login_prompt=_StrictLoginPrompt())
+    assert client.prepare_login() == "chani"
