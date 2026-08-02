@@ -29,10 +29,37 @@ single-process, two-client branch doesn't need yet. An unconditional
 ~20Hz broadcast is the smallest thing that keeps every connected
 client's board eventually consistent with the server's.
 
-WHY THE SERVER SENDS ONE GameStateUpdate IMMEDIATELY ON CONNECT:
+WHY THE SERVER SENDS ONE GameStateUpdate IMMEDIATELY ON LOGIN:
 So a client learns its assigned color (GameStateUpdate.your_color)
 right away instead of waiting up to one tick interval for the first
-scheduled broadcast.
+scheduled broadcast. As of feature/home-screen-basic-login (Step 3),
+this happens after a successful login, not on raw connect - see below.
+
+WHY A CONNECTION MUST LOG IN (LoginRequest) BEFORE ANYTHING ELSE
+HAPPENS, AND WHY IT HAS A TIMEOUT (feature/home-screen-basic-login,
+Step 3):
+Role assignment (session.py) is now keyed on *login* order, not raw
+TCP-accept order, so a connection that hasn't logged in yet must not be
+treated as a real player OR a spectator - it isn't added to
+self._connections (and therefore never appears in a broadcast, never
+gets the welcome GameStateUpdate) until login_gate.await_login()
+actually returns a LoginRequest. A client that never logs in would
+otherwise hold a socket open forever with no way for the server to ever
+reclaim it, so await_login() is bounded by login_timeout_seconds; on
+timeout or a malformed/wrong-type first message, the server sends a
+single Error and closes the connection (returning from
+_handle_connection ends the coroutine, which the websockets library
+treats as "close this connection").
+
+WHY ClientCore MUST SEND LoginRequest BEFORE WAITING FOR THE WELCOME:
+This is the flip side of the same design - since the server won't
+send anything until login arrives, and ClientCore.connect() blocks
+until the first GameStateUpdate arrives, sending login is what unblocks
+it. Getting this order backwards on the client side (wait for welcome,
+then send login) would deadlock every single connection: see
+client_core.py's own note and this branch's explicit "client that never
+logs in" test proving the *server* side degrades to a clean timeout
+rather than a silent hang.
 
 WHY PORT 0 IS THE DEFAULT FOR TESTS RATHER THAN A FIXED PORT:
 Binding to port 0 asks the OS to pick a free ephemeral port, so tests
@@ -56,6 +83,12 @@ import websockets
 
 from kungfu_chess.network import protocol
 from kungfu_chess.network.game_session import GameSession, TICK_MS
+from kungfu_chess.network.login_gate import (
+    DEFAULT_LOGIN_TIMEOUT_SECONDS,
+    LoginFailed,
+    LoginTimeout,
+    await_login,
+)
 
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 8765
@@ -63,15 +96,17 @@ DEFAULT_PORT = 8765
 
 class WebSocketServer:
     def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
-                 tick_ms: int = TICK_MS):
+                 tick_ms: int = TICK_MS,
+                 login_timeout_seconds: float = DEFAULT_LOGIN_TIMEOUT_SECONDS):
         self._host = host
         self._port = port
         self._tick_ms = tick_ms
+        self._login_timeout_seconds = login_timeout_seconds
         self._server = None
         self._tick_task = None
         self._game = GameSession()
         self._game.on_move_completed(self._schedule_broadcast)
-        self._connections = {}  # websocket -> Session
+        self._connections = {}  # websocket -> Session, logged-in connections only
 
     async def start(self) -> "WebSocketServer":
         self._server = await websockets.serve(self._handle_connection, self._host, self._port)
@@ -93,21 +128,38 @@ class WebSocketServer:
             await self._server.wait_closed()
 
     async def _handle_connection(self, websocket) -> None:
-        session = self._game.connect(websocket)
-        self._connections[websocket] = session
-        print(f"[connect] role={session.role.name} color={session.color} "
-              f"connections={len(self._connections)}")
+        self._game.connect(websocket)  # pending - no role, not in self._connections yet
         try:
+            try:
+                login = await await_login(websocket, self._login_timeout_seconds)
+            except LoginTimeout:
+                print(f"[login-timeout] connections={len(self._connections)}")
+                await websocket.send(protocol.encode(protocol.Error(reason="login_timeout")))
+                return
+            except LoginFailed as exc:
+                print(f"[login-failed] reason={exc.reason} connections={len(self._connections)}")
+                await websocket.send(protocol.encode(protocol.Error(reason=exc.reason)))
+                return
+
+            session = self._game.login(websocket, login.username)
+            self._connections[websocket] = session
+            print(f"[connect] username={session.username} role={session.role.name} "
+                  f"color={session.color} connections={len(self._connections)}")
+
             await websocket.send(protocol.encode(self._game.state_update_for(session)))
             async for raw in websocket:
                 reply = self._game.handle_message(session, raw)
                 if reply is not None:
                     await websocket.send(protocol.encode(reply))
+        except websockets.exceptions.ConnectionClosed:
+            pass
         finally:
             self._game.disconnect(websocket)
-            del self._connections[websocket]
-            print(f"[disconnect] role={session.role.name} color={session.color} "
-                  f"connections={len(self._connections)}")
+            logged_in_session = self._connections.pop(websocket, None)
+            if logged_in_session is not None:
+                print(f"[disconnect] username={logged_in_session.username} "
+                      f"role={logged_in_session.role.name} color={logged_in_session.color} "
+                      f"connections={len(self._connections)}")
 
     def _schedule_broadcast(self) -> None:
         """GameSession's MoveCompletedEvent subscriber calls this

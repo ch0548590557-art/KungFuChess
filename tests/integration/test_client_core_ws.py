@@ -16,10 +16,21 @@ async def _stop_server(server):
     await server.wait_closed()
 
 
+def _client(uri: str, username: str) -> ClientCore:
+    """A ClientCore with a username already set, bypassing prepare_login()/
+    LoginPrompt entirely - these tests don't care how the username was
+    collected, only that connect() sends it (see client_core.py: connect()
+    requires self.username to be set, since it sends LoginRequest before
+    ever waiting for the welcome)."""
+    client = ClientCore(uri)
+    client.username = username
+    return client
+
+
 def test_two_clients_learn_their_assigned_colors_on_connect():
     async def scenario():
         server, uri = await _start_server()
-        white, black = ClientCore(uri), ClientCore(uri)
+        white, black = _client(uri, "alice"), _client(uri, "bob")
         try:
             await white.connect()
             await black.connect()
@@ -37,7 +48,7 @@ def test_two_clients_learn_their_assigned_colors_on_connect():
 def test_legal_move_is_broadcast_to_both_clients():
     async def scenario():
         server, uri = await _start_server()
-        white, black = ClientCore(uri), ClientCore(uri)
+        white, black = _client(uri, "alice"), _client(uri, "bob")
         white_saw_motion = asyncio.Event()
         black_saw_motion = asyncio.Event()
 
@@ -63,7 +74,7 @@ def test_legal_move_is_broadcast_to_both_clients():
 def test_illegal_move_reaches_only_the_sender_as_an_error():
     async def scenario():
         server, uri = await _start_server()
-        white, black = ClientCore(uri), ClientCore(uri)
+        white, black = _client(uri, "alice"), _client(uri, "bob")
         white_error_seen = asyncio.Event()
         black_errors = []
 
@@ -99,7 +110,7 @@ def test_two_in_flight_requests_are_each_matched_to_their_own_error():
     Error belongs to, not just that "something" failed."""
     async def scenario():
         server, uri = await _start_server()
-        white = ClientCore(uri)
+        white = _client(uri, "alice")
         received = []
         done = asyncio.Event()
 
@@ -135,7 +146,7 @@ def test_two_in_flight_requests_are_each_matched_to_their_own_error():
 def test_dispatcher_still_finds_the_error_under_frequent_broadcast_interleaving():
     async def scenario():
         server, uri = await _start_server(tick_ms=10)  # fast tick to maximize interleaving
-        white = ClientCore(uri)
+        white = _client(uri, "alice")
         error_seen = asyncio.Event()
         white.on_error(lambda error, request: error_seen.set())
         try:
@@ -147,6 +158,30 @@ def test_dispatcher_still_finds_the_error_under_frequent_broadcast_interleaving(
             )
         finally:
             await white.close()
+            await _stop_server(server)
+
+    asyncio.run(scenario())
+
+
+def test_second_to_connect_but_first_to_login_gets_white():
+    """Proves role assignment follows login order, not the order
+    ClientCore.connect() happened to be awaited in - see session.py's
+    complete_login()."""
+    async def scenario():
+        server, uri = await _start_server()
+        first_to_connect = _client(uri, "alice")
+        second_to_connect = _client(uri, "bob")
+        try:
+            # Awaiting second_to_connect's connect() to completion before
+            # even starting first_to_connect's means it logs in first.
+            await second_to_connect.connect()
+            await first_to_connect.connect()
+
+            assert second_to_connect.my_color == "w"
+            assert first_to_connect.my_color == "b"
+        finally:
+            await first_to_connect.close()
+            await second_to_connect.close()
             await _stop_server(server)
 
     asyncio.run(scenario())

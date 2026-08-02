@@ -1,5 +1,6 @@
 import asyncio
 
+import pytest
 import websockets
 
 from kungfu_chess.model.position import Position
@@ -17,10 +18,12 @@ async def _stop(server):
     await server.wait_closed()
 
 
-async def _welcome(connection) -> protocol.GameStateUpdate:
-    """Every connection's first message is a personalized GameStateUpdate
-    (see ws_server.py: sent immediately on connect so a client learns its
-    color without waiting for the first tick)."""
+async def _welcome(connection, username: str = "player") -> protocol.GameStateUpdate:
+    """Logs in with `username`, then returns the personalized
+    GameStateUpdate the server sends right after (see ws_server.py: the
+    server withholds everything, including this welcome, until a
+    LoginRequest arrives - feature/home-screen-basic-login, Step 3)."""
+    await connection.send(protocol.encode(protocol.LoginRequest(username=username)))
     return protocol.decode(await connection.recv())
 
 
@@ -64,11 +67,85 @@ def test_two_clients_connect_concurrently_and_each_learns_its_own_color():
         try:
             async with websockets.connect(uri) as first, \
                     websockets.connect(uri) as second:
-                first_welcome = await _welcome(first)
-                second_welcome = await _welcome(second)
+                first_welcome = await _welcome(first, "alice")
+                second_welcome = await _welcome(second, "bob")
 
                 assert first_welcome.your_color == "w"
                 assert second_welcome.your_color == "b"
+        finally:
+            await _stop(server)
+
+    asyncio.run(scenario())
+
+
+def test_second_to_connect_but_first_to_login_gets_white():
+    """Proves role assignment follows login order, not raw TCP-accept
+    order - see session.py's complete_login()."""
+    async def scenario():
+        server, uri = await _start()
+        try:
+            async with websockets.connect(uri) as first_to_connect, \
+                    websockets.connect(uri) as second_to_connect:
+                # second_to_connect logs in first.
+                second_welcome = await _welcome(second_to_connect, "bob")
+                first_welcome = await _welcome(first_to_connect, "alice")
+
+                assert second_welcome.your_color == "w"
+                assert first_welcome.your_color == "b"
+        finally:
+            await _stop(server)
+
+    asyncio.run(scenario())
+
+
+def test_client_that_never_logs_in_gets_a_timeout_error_and_is_disconnected():
+    async def scenario():
+        server, uri = await _start(login_timeout_seconds=0.3)
+        try:
+            async with websockets.connect(uri) as ws:
+                # Deliberately never send a LoginRequest - this is the
+                # "client never sends login" scenario: the server must
+                # degrade to a clean timeout, not hang forever waiting
+                # (and the client must not deadlock waiting on a welcome
+                # that will never come, since it never asked for one).
+                reply = protocol.decode(await asyncio.wait_for(ws.recv(), timeout=2.0))
+                assert reply == protocol.Error(reason="login_timeout")
+
+                # The server closes the connection right after sending
+                # that - a further recv() must fail, not hang.
+                with pytest.raises(websockets.exceptions.ConnectionClosed):
+                    await asyncio.wait_for(ws.recv(), timeout=2.0)
+        finally:
+            await _stop(server)
+
+    asyncio.run(scenario())
+
+
+def test_client_that_sends_garbage_before_logging_in_is_rejected():
+    async def scenario():
+        server, uri = await _start()
+        try:
+            async with websockets.connect(uri) as ws:
+                await ws.send("not json at all")
+                reply = protocol.decode(await asyncio.wait_for(ws.recv(), timeout=2.0))
+                assert reply == protocol.Error(reason="malformed_message")
+        finally:
+            await _stop(server)
+
+    asyncio.run(scenario())
+
+
+def test_client_that_sends_a_move_before_logging_in_is_rejected():
+    async def scenario():
+        server, uri = await _start()
+        try:
+            async with websockets.connect(uri) as ws:
+                move = protocol.MoveRequest(
+                    request_id="1", source=Position(6, 4), destination=Position(4, 4),
+                )
+                await ws.send(protocol.encode(move))
+                reply = protocol.decode(await asyncio.wait_for(ws.recv(), timeout=2.0))
+                assert reply == protocol.Error(reason="login_required")
         finally:
             await _stop(server)
 
@@ -93,9 +170,9 @@ def test_legal_move_broadcasts_updated_state_to_players_and_spectators():
             async with websockets.connect(uri) as white, \
                     websockets.connect(uri) as black, \
                     websockets.connect(uri) as spectator:
-                await _welcome(white)
-                await _welcome(black)
-                spectator_welcome = await _welcome(spectator)
+                await _welcome(white, "alice")
+                await _welcome(black, "bob")
+                spectator_welcome = await _welcome(spectator, "carol")
                 assert spectator_welcome.your_color is None
 
                 move = protocol.MoveRequest(request_id="1", source=Position(6, 4), destination=Position(4, 4))
@@ -124,7 +201,7 @@ def test_illegal_move_returns_error_directly_to_the_sender():
         server, uri = await _start()
         try:
             async with websockets.connect(uri) as white:
-                await _welcome(white)
+                await _welcome(white, "alice")
 
                 # A rook has no legal diagonal hop from its own starting cell.
                 move = protocol.MoveRequest(request_id="1", source=Position(7, 0), destination=Position(5, 2))
@@ -144,8 +221,8 @@ def test_moving_the_opponents_piece_returns_wrong_color():
         try:
             async with websockets.connect(uri) as white, \
                     websockets.connect(uri) as black:
-                await _welcome(white)
-                await _welcome(black)
+                await _welcome(white, "alice")
+                await _welcome(black, "bob")
 
                 move = protocol.MoveRequest(request_id="1", source=Position(1, 4), destination=Position(3, 4))
                 await white.send(protocol.encode(move))
@@ -165,9 +242,9 @@ def test_spectator_move_request_is_rejected():
             async with websockets.connect(uri) as white, \
                     websockets.connect(uri) as black, \
                     websockets.connect(uri) as spectator:
-                await _welcome(white)
-                await _welcome(black)
-                await _welcome(spectator)
+                await _welcome(white, "alice")
+                await _welcome(black, "bob")
+                await _welcome(spectator, "carol")
 
                 move = protocol.MoveRequest(request_id="1", source=Position(6, 4), destination=Position(4, 4))
                 await spectator.send(protocol.encode(move))
@@ -185,7 +262,7 @@ def test_tick_loop_lands_an_accepted_motion_without_any_further_client_message()
         server, uri = await _start(tick_ms=100)
         try:
             async with websockets.connect(uri) as white:
-                await _welcome(white)
+                await _welcome(white, "alice")
 
                 move = protocol.MoveRequest(request_id="1", source=Position(6, 4), destination=Position(4, 4))
                 await white.send(protocol.encode(move))
@@ -207,21 +284,21 @@ def test_tick_loop_lands_an_accepted_motion_without_any_further_client_message()
     asyncio.run(scenario())
 
 
-def test_connect_and_disconnect_are_logged_with_role_and_connection_count(capsys):
+def test_connect_and_disconnect_are_logged_with_username_role_and_connection_count(capsys):
     async def scenario():
         server, uri = await _start()
         try:
             async with websockets.connect(uri) as first:
-                await _welcome(first)
+                await _welcome(first, "alice")
                 async with websockets.connect(uri) as second:
-                    await _welcome(second)
+                    await _welcome(second, "bob")
         finally:
             await _stop(server)
 
     asyncio.run(scenario())
 
     out = capsys.readouterr().out
-    assert "[connect] role=WHITE color=w connections=1" in out
-    assert "[connect] role=BLACK color=b connections=2" in out
-    assert "[disconnect] role=BLACK color=b connections=1" in out
-    assert "[disconnect] role=WHITE color=w connections=0" in out
+    assert "[connect] username=alice role=WHITE color=w connections=1" in out
+    assert "[connect] username=bob role=BLACK color=b connections=2" in out
+    assert "[disconnect] username=bob role=BLACK color=b connections=1" in out
+    assert "[disconnect] username=alice role=WHITE color=w connections=0" in out

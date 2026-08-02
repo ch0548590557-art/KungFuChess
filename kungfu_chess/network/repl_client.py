@@ -4,12 +4,22 @@ playtesting the WS transport end-to-end (Step 5). Connects via
 ClientCore, prints the board as text after every update, and reads
 "move <r>,<c> <r>,<c>" / "jump <r>,<c>" / "quit" from stdin.
 
-Not a real game client - no login, no graphics, no algebraic notation.
-It exists purely so a human can drive two independent terminal
-processes against the same WebSocketServer and watch a real game play
-out, proving the whole stack (protocol -> SessionManager -> GameSession
--> GameEngine -> RealTimeArbiter's tick-driven arrivals) works end to
-end. A real UI is later work, on top of this same ClientCore.
+Not a real game client - no graphics, no algebraic notation. It exists
+purely so a human can drive two independent terminal processes against
+the same WebSocketServer and watch a real game play out, proving the
+whole stack (protocol -> SessionManager -> GameSession -> GameEngine ->
+RealTimeArbiter's tick-driven arrivals) works end to end. A real UI is
+later work, on top of this same ClientCore.
+
+WHY A USERNAME IS COLLECTED VIA ShellLoginPrompt BEFORE connect()
+(feature/home-screen-basic-login):
+This is a placeholder identity step (no password, no DB) - see
+login_prompt.py's own docstring for why ClientCore only ever calls
+LoginPrompt.get_username() and never knows a terminal is involved.
+prepare_login() only collects the username locally; connect() is what
+actually sends it (as a LoginRequest) and blocks until the server's
+welcome arrives - role assignment now follows login order, not raw
+connection order (see session.py/ws_server.py).
 
 Coordinates are (row, col), matching the internal model exactly (see
 model/position.py): row 0 is the BLACK back rank (top), row 7 is the
@@ -40,6 +50,7 @@ import sys
 
 from kungfu_chess.model.position import Position
 from kungfu_chess.network.client_core import ClientCore, SentRequest
+from kungfu_chess.network.login_prompt import ShellLoginPrompt
 from kungfu_chess.network.protocol import Error, GameStateUpdate
 from kungfu_chess.network.ws_server import DEFAULT_HOST, DEFAULT_PORT
 
@@ -88,7 +99,10 @@ async def _read_command() -> str:
 
 
 async def _run(uri: str) -> None:
-    client = ClientCore(uri)
+    client = ClientCore(uri, login_prompt=ShellLoginPrompt())
+    client.prepare_login()
+    print(f"logging in as: {client.username}")
+
     last_printed: "GameStateUpdate | None" = None
 
     def _on_state_update(update: GameStateUpdate) -> None:

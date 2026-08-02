@@ -49,6 +49,16 @@ The transport (WebSocketServer) is what can actually iterate live
 sockets and send bytes; GameSession's only obligation is to say "a move
 just completed" the moment MoveCompletedEvent fires, and let whoever
 owns the sockets decide what a broadcast means.
+
+WHY connect()/login() ARE SEPARATE (feature/home-screen-basic-login,
+Step 3):
+connect() just registers a socket (SessionManager.register_connection -
+no role yet); login() is the only thing that ever assigns one
+(SessionManager.complete_login), called once WebSocketServer's
+login_gate.await_login() actually receives a LoginRequest. GameSession
+itself does no waiting/timeout logic - that's a transport-timing concern
+login_gate.py owns; GameSession only ever answers "given a connection
+and a username, who are they now."
 """
 
 from typing import Callable, Optional
@@ -90,6 +100,9 @@ class GameSession:
 
     def connect(self, connection) -> Session:
         return self._sessions.register_connection(connection)
+
+    def login(self, connection, username: str) -> Session:
+        return self._sessions.complete_login(connection, username)
 
     def disconnect(self, connection) -> None:
         self._sessions.unregister_connection(connection)
