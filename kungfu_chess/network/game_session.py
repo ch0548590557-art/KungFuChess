@@ -169,5 +169,8 @@ class GameSession:
 
     def state_update_for(self, session: Session) -> protocol.GameStateUpdate:
         return protocol.GameStateUpdate.from_snapshot(
-            self._engine.snapshot(), your_color=session.color,
+            self._engine.snapshot(),
+            your_color=session.color,
+            white_username=self._sessions.username_for_role(PlayerRole.WHITE),
+            black_username=self._sessions.username_for_role(PlayerRole.BLACK),
         )

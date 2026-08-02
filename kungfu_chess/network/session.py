@@ -101,3 +101,13 @@ class SessionManager:
         session = self._sessions.pop(connection, None)
         if session is not None and session.role in (PlayerRole.WHITE, PlayerRole.BLACK):
             self._role_taken[session.role] = False
+
+    def username_for_role(self, role: PlayerRole) -> Optional[str]:
+        """The username of whichever session currently holds `role`
+        (WHITE or BLACK), or None if nobody has logged in as that color
+        yet. Used so a GameStateUpdate broadcast can tell every client
+        who they're playing against, not just their own color."""
+        for session in self._sessions.values():
+            if session.role is role:
+                return session.username
+        return None

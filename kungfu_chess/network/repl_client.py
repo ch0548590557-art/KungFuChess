@@ -65,10 +65,11 @@ def _render(update: GameStateUpdate) -> str:
         f"  in flight: {m.source.row},{m.source.col} -> {m.destination.row},{m.destination.col}"
         for m in update.motions
     ]
+    players = f"white: {update.white_username or '?'} | black: {update.black_username or '?'}"
     status = f"you are: {update.your_color or 'spectator'} | game_over={update.game_over}"
     if update.winner:
         status += f" | winner={update.winner}"
-    return "\n".join([board_text, status, *motion_lines])
+    return "\n".join([board_text, players, status, *motion_lines])
 
 
 def _parse_position(token: str) -> Position:

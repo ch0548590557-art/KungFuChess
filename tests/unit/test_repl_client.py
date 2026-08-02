@@ -45,6 +45,22 @@ def test_render_shows_winner_when_game_is_over():
     assert "winner=w" in text
 
 
+def test_render_shows_both_players_usernames():
+    update = GameStateUpdate(
+        board_width=1, board_height=1, pieces=[], game_over=False,
+        white_username="alice", black_username="bob",
+    )
+    assert "white: alice | black: bob" in _render(update)
+
+
+def test_render_shows_placeholder_for_a_username_not_logged_in_yet():
+    update = GameStateUpdate(
+        board_width=1, board_height=1, pieces=[], game_over=False,
+        white_username="alice", black_username=None,
+    )
+    assert "white: alice | black: ?" in _render(update)
+
+
 def test_should_not_reprint_an_identical_tick_broadcast():
     """The server broadcasts ~20 times/second regardless of whether
     anything changed - discovered as a real terminal-flooding bug when

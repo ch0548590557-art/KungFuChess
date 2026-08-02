@@ -71,6 +71,18 @@ on GameStateUpdate.your_color exactly as before. A later step in this
 same branch changes *when* that assignment happens (by login order
 rather than raw connection order), but doesn't add a dedicated login
 reply message.
+
+WHY GameStateUpdate CARRIES white_username/black_username (feature/
+home-screen-basic-login, added after login-order role assignment
+shipped):
+A client learns its *own* color from your_color, but has no way to
+know who it's playing against - LoginRequest only ever travels
+client->server, so a client never sees the other side's username over
+the wire any other way. Both fields default to None (nobody has logged
+in as that color yet, e.g. right after the first player connects) and
+are broadcast identically to every recipient (unlike your_color, which
+is personalized per connection) - "who is White" is the same fact for
+everyone watching, not something that varies by who's asking.
 """
 
 import json
@@ -139,9 +151,14 @@ class GameStateUpdate:
     captures: List[CaptureInfo] = field(default_factory=list)
     completed_moves: List[CompletedMove] = field(default_factory=list)
     your_color: Optional[str] = None  # "w" | "b" | None (spectator) - see module docstring
+    white_username: Optional[str] = None  # None until someone has logged in as White
+    black_username: Optional[str] = None  # None until someone has logged in as Black
 
     @staticmethod
-    def from_snapshot(snapshot, your_color: Optional[str] = None) -> "GameStateUpdate":
+    def from_snapshot(
+        snapshot, your_color: Optional[str] = None,
+        white_username: Optional[str] = None, black_username: Optional[str] = None,
+    ) -> "GameStateUpdate":
         pieces = [
             PieceInfo(kind=kind, color=color, row=row, col=col, state=state)
             for kind, color, row, col, state in snapshot.pieces
@@ -171,6 +188,8 @@ class GameStateUpdate:
             captures=captures,
             completed_moves=completed_moves,
             your_color=your_color,
+            white_username=white_username,
+            black_username=black_username,
         )
 
 
@@ -245,5 +264,7 @@ def decode(raw: str) -> Message:
             captures=[CaptureInfo(**c) for c in payload.get("captures", [])],
             completed_moves=[CompletedMove(**cm) for cm in payload.get("completed_moves", [])],
             your_color=payload.get("your_color"),
+            white_username=payload.get("white_username"),
+            black_username=payload.get("black_username"),
         )
     return cls(**payload)  # Error or LoginRequest - both are flat, no nested Position fields

@@ -54,6 +54,8 @@ def test_game_state_update_round_trip_with_full_fields():
         captures=[CaptureInfo(kind="P", color="b")],
         completed_moves=[CompletedMove(color="w", san="e4", timestamp_ms=1400)],
         your_color="w",
+        white_username="alice",
+        black_username="bob",
     )
     assert protocol.decode(protocol.encode(message)) == message
 
@@ -83,7 +85,9 @@ class _FakeSnapshot:
 
 
 def test_game_state_update_from_snapshot_converts_all_fields():
-    update = GameStateUpdate.from_snapshot(_FakeSnapshot(), your_color="b")
+    update = GameStateUpdate.from_snapshot(
+        _FakeSnapshot(), your_color="b", white_username="alice", black_username="bob",
+    )
 
     assert update.pieces == [PieceInfo(kind="K", color="w", row=7, col=4, state="IDLE")]
     assert update.motions == [MotionInfo(
@@ -93,3 +97,12 @@ def test_game_state_update_from_snapshot_converts_all_fields():
     assert update.captures == [CaptureInfo(kind="P", color="b")]
     assert update.completed_moves == [CompletedMove(color="w", san="e4", timestamp_ms=1400)]
     assert update.your_color == "b"
+    assert update.white_username == "alice"
+    assert update.black_username == "bob"
+
+
+def test_game_state_update_from_snapshot_defaults_usernames_to_none():
+    update = GameStateUpdate.from_snapshot(_FakeSnapshot())
+
+    assert update.white_username is None
+    assert update.black_username is None

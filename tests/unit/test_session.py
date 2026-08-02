@@ -111,3 +111,30 @@ def test_unregister_a_connection_that_never_logged_in_is_a_no_op():
 def test_unregister_unknown_connection_is_a_no_op():
     manager = SessionManager()
     manager.unregister_connection("never-registered")  # must not raise
+
+
+def test_username_for_role_is_none_before_anyone_logs_in():
+    manager = SessionManager()
+    assert manager.username_for_role(PlayerRole.WHITE) is None
+    assert manager.username_for_role(PlayerRole.BLACK) is None
+
+
+def test_username_for_role_returns_the_logged_in_players_username():
+    manager = SessionManager()
+    manager.register_connection("conn-1")
+    manager.complete_login("conn-1", "alice")
+    manager.register_connection("conn-2")
+    manager.complete_login("conn-2", "bob")
+
+    assert manager.username_for_role(PlayerRole.WHITE) == "alice"
+    assert manager.username_for_role(PlayerRole.BLACK) == "bob"
+
+
+def test_username_for_role_forgets_a_disconnected_players_username():
+    manager = SessionManager()
+    manager.register_connection("conn-1")
+    manager.complete_login("conn-1", "alice")
+
+    manager.unregister_connection("conn-1")
+
+    assert manager.username_for_role(PlayerRole.WHITE) is None

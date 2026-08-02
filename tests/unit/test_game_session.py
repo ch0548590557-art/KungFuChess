@@ -190,3 +190,24 @@ def test_state_update_for_a_pending_not_yet_logged_in_session_has_no_color():
 
     assert pending.role is None
     assert game.state_update_for(pending).your_color is None
+
+
+def test_state_update_for_carries_both_players_usernames_identically_to_everyone():
+    game = GameSession()
+    white = _login(game, "conn-white", "alice")
+    black = _login(game, "conn-black", "bob")
+    spectator = _login(game, "conn-spectator", "carol")
+
+    for session in (white, black, spectator):
+        update = game.state_update_for(session)
+        assert update.white_username == "alice"
+        assert update.black_username == "bob"
+
+
+def test_state_update_for_usernames_are_none_before_both_players_have_logged_in():
+    game = GameSession()
+    white = _login(game, "conn-white", "alice")
+
+    update = game.state_update_for(white)
+    assert update.white_username == "alice"
+    assert update.black_username is None
