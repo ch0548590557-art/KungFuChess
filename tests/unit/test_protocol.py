@@ -8,6 +8,7 @@ from kungfu_chess.network.protocol import (
     Error,
     GameStateUpdate,
     JumpRequest,
+    LoginRequest,
     MotionInfo,
     MoveRequest,
     PieceInfo,
@@ -21,6 +22,11 @@ def test_move_request_round_trip():
 
 def test_jump_request_round_trip():
     message = JumpRequest(request_id="2", source=Position(6, 4))
+    assert protocol.decode(protocol.encode(message)) == message
+
+
+def test_login_request_round_trip():
+    message = LoginRequest(username="chani")
     assert protocol.decode(protocol.encode(message)) == message
 
 

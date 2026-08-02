@@ -60,6 +60,17 @@ determinable: GameSession only ever echoes it back verbatim onto the
 Error it returns to that same sender, never interprets it. GameStateUpdate
 does not get one - it is never a reply to a specific request, only a
 broadcast (see your_color's docstring above for the same reasoning).
+
+WHY LoginRequest EXISTS (feature/home-screen-basic-login):
+A client now sends its chosen username right after connecting, before
+any MoveRequest/JumpRequest - a *placeholder* identity step (no
+password, no DB, no real authentication yet). It carries no request_id:
+it isn't a game action GameEngine could accept/reject, and there is
+nothing new for the server to reply with - role assignment still rides
+on GameStateUpdate.your_color exactly as before. A later step in this
+same branch changes *when* that assignment happens (by login order
+rather than raw connection order), but doesn't add a dedicated login
+reply message.
 """
 
 import json
@@ -80,6 +91,11 @@ class MoveRequest:
 class JumpRequest:
     request_id: str
     source: Position
+
+
+@dataclass
+class LoginRequest:
+    username: str
 
 
 @dataclass
@@ -174,11 +190,12 @@ class UnknownMessageType(ValueError):
     catch it without changes."""
 
 
-Message = Union[MoveRequest, JumpRequest, GameStateUpdate, Error]
+Message = Union[MoveRequest, JumpRequest, LoginRequest, GameStateUpdate, Error]
 
 _TYPE_NAMES = {
     MoveRequest: "move_request",
     JumpRequest: "jump_request",
+    LoginRequest: "login_request",
     GameStateUpdate: "game_state_update",
     Error: "error",
 }
@@ -229,4 +246,4 @@ def decode(raw: str) -> Message:
             completed_moves=[CompletedMove(**cm) for cm in payload.get("completed_moves", [])],
             your_color=payload.get("your_color"),
         )
-    return cls(**payload)  # Error
+    return cls(**payload)  # Error or LoginRequest - both are flat, no nested Position fields
