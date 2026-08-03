@@ -36,6 +36,9 @@ class SqliteUserRepository(UserRepository):
         with self._conn:
             self._conn.execute(_SCHEMA)
 
+    def close(self) -> None:
+        self._conn.close()
+
     def create_user(
         self,
         username: str,

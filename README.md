@@ -30,6 +30,12 @@ in prints a demo starting position instead. Both paths call the exact
 same `build_game()` composition root, so there is exactly one place any
 future change to how the game is wired needs to happen.
 
+## Environment variables
+
+| Variable | Required for | Notes |
+|---|---|---|
+| `KUNGFU_CHESS_PASSWORD_PEPPER` | Hashing/verifying user passwords (`kungfu_chess/auth/password_hashing.py`) | Secret, application-wide value - never stored in the DB or git. See `.env.example`. Generate one with `python -c "import secrets; print(secrets.token_hex(32))"`. The process raises `RuntimeError` at hash/verify time if this is unset - it will not fall back to an insecure default. |
+
 ## Package structure
 
 ```
