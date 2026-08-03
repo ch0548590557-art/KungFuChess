@@ -8,11 +8,6 @@ from kungfu_chess.auth import password_hashing as ph
 from kungfu_chess.auth.sqlite_user_repository import SqliteUserRepository
 
 
-@pytest.fixture(autouse=True)
-def pepper(monkeypatch):
-    monkeypatch.setenv(ph.PEPPER_ENV_VAR, "unit-test-pepper-value-do-not-use-in-prod")
-
-
 def test_verify_password_accepts_correct_password():
     salt = ph.generate_salt()
     hashed = ph.hash_password("correct horse", salt)
