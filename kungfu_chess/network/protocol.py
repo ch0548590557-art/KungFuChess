@@ -72,6 +72,24 @@ same branch changes *when* that assignment happens (by login order
 rather than raw connection order), but doesn't add a dedicated login
 reply message.
 
+WHY LoginRequest GAINED A password FIELD, AND WHY RegisterRequest IS A
+SEPARATE MESSAGE RATHER THAN A boolean on LoginRequest (feature/
+auth-sqlite-elo, Step 4):
+The placeholder above is gone now that login_gate.py checks real
+credentials against AuthService (see auth/auth_service.py) - a bare
+username is no longer enough to identify anyone, so LoginRequest carries
+a password like any real login form would. RegisterRequest is a distinct
+type rather than `LoginRequest(username, password, is_register=True)`
+because register and login are genuinely different server actions
+(create a row vs. read one) with different failure reasons
+(username_taken vs. invalid_credentials) - a shared message with a mode
+flag would still need that same branch on the receiving end, but would
+let a client accidentally send a register-shaped intent through the
+login path (or vice versa) with no type-level signal that anything was
+wrong. Like LoginRequest, RegisterRequest carries no request_id (see
+above) and gets no dedicated reply - success still rides on the welcome
+GameStateUpdate; failure rides on Error(reason="username_taken").
+
 WHY GameStateUpdate CARRIES white_username/black_username (feature/
 home-screen-basic-login, added after login-order role assignment
 shipped):
@@ -108,6 +126,13 @@ class JumpRequest:
 @dataclass
 class LoginRequest:
     username: str
+    password: str
+
+
+@dataclass
+class RegisterRequest:
+    username: str
+    password: str
 
 
 @dataclass
@@ -209,12 +234,13 @@ class UnknownMessageType(ValueError):
     catch it without changes."""
 
 
-Message = Union[MoveRequest, JumpRequest, LoginRequest, GameStateUpdate, Error]
+Message = Union[MoveRequest, JumpRequest, LoginRequest, RegisterRequest, GameStateUpdate, Error]
 
 _TYPE_NAMES = {
     MoveRequest: "move_request",
     JumpRequest: "jump_request",
     LoginRequest: "login_request",
+    RegisterRequest: "register_request",
     GameStateUpdate: "game_state_update",
     Error: "error",
 }
@@ -267,4 +293,4 @@ def decode(raw: str) -> Message:
             white_username=payload.get("white_username"),
             black_username=payload.get("black_username"),
         )
-    return cls(**payload)  # Error or LoginRequest - both are flat, no nested Position fields
+    return cls(**payload)  # Error/LoginRequest/RegisterRequest - all flat, no nested Position fields

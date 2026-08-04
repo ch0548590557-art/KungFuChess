@@ -3,13 +3,16 @@ import asyncio
 import pytest
 import websockets
 
+from kungfu_chess.auth.auth_service import SqliteAuthService
+from kungfu_chess.auth.sqlite_user_repository import SqliteUserRepository
 from kungfu_chess.model.position import Position
 from kungfu_chess.network import protocol
 from kungfu_chess.network.ws_server import WebSocketServer
 
 
 async def _start(**kwargs):
-    server = await WebSocketServer(port=0, **kwargs).start()
+    auth_service = kwargs.pop("auth_service", None) or SqliteAuthService(SqliteUserRepository(":memory:"))
+    server = await WebSocketServer(auth_service, port=0, **kwargs).start()
     return server, f"ws://localhost:{server.port}"
 
 
@@ -18,12 +21,15 @@ async def _stop(server):
     await server.wait_closed()
 
 
-async def _welcome(connection, username: str = "player") -> protocol.GameStateUpdate:
-    """Logs in with `username`, then returns the personalized
-    GameStateUpdate the server sends right after (see ws_server.py: the
-    server withholds everything, including this welcome, until a
-    LoginRequest arrives - feature/home-screen-basic-login, Step 3)."""
-    await connection.send(protocol.encode(protocol.LoginRequest(username=username)))
+async def _welcome(connection, username: str = "player", password: str = "hunter2") -> protocol.GameStateUpdate:
+    """Registers a fresh `username` (every test starts a server with its
+    own in-memory user DB via _start(), so the username is always new),
+    then returns the personalized GameStateUpdate the server sends right
+    after (see ws_server.py: the server withholds everything, including
+    this welcome, until a RegisterRequest/LoginRequest arrives and
+    AuthService accepts it - feature/home-screen-basic-login Step 3,
+    real auth added feature/auth-sqlite-elo Step 4)."""
+    await connection.send(protocol.encode(protocol.RegisterRequest(username=username, password=password)))
     return protocol.decode(await connection.recv())
 
 
@@ -146,6 +152,44 @@ def test_client_that_sends_a_move_before_logging_in_is_rejected():
                 await ws.send(protocol.encode(move))
                 reply = protocol.decode(await asyncio.wait_for(ws.recv(), timeout=2.0))
                 assert reply == protocol.Error(reason="login_required")
+        finally:
+            await _stop(server)
+
+    asyncio.run(scenario())
+
+
+def test_registering_an_already_taken_username_is_rejected():
+    async def scenario():
+        server, uri = await _start()
+        try:
+            async with websockets.connect(uri) as first, \
+                    websockets.connect(uri) as second:
+                await _welcome(first, "alice", "hunter2")
+
+                await second.send(protocol.encode(
+                    protocol.RegisterRequest(username="alice", password="different password"),
+                ))
+                reply = protocol.decode(await asyncio.wait_for(second.recv(), timeout=2.0))
+                assert reply == protocol.Error(reason="username_taken")
+        finally:
+            await _stop(server)
+
+    asyncio.run(scenario())
+
+
+def test_logging_in_with_the_wrong_password_is_rejected():
+    async def scenario():
+        server, uri = await _start()
+        try:
+            async with websockets.connect(uri) as first, \
+                    websockets.connect(uri) as second:
+                await _welcome(first, "alice", "hunter2")
+
+                await second.send(protocol.encode(
+                    protocol.LoginRequest(username="alice", password="wrong password"),
+                ))
+                reply = protocol.decode(await asyncio.wait_for(second.recv(), timeout=2.0))
+                assert reply == protocol.Error(reason="invalid_credentials")
         finally:
             await _stop(server)
 

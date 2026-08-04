@@ -12,6 +12,7 @@ from kungfu_chess.network.protocol import (
     MotionInfo,
     MoveRequest,
     PieceInfo,
+    RegisterRequest,
 )
 
 
@@ -26,7 +27,12 @@ def test_jump_request_round_trip():
 
 
 def test_login_request_round_trip():
-    message = LoginRequest(username="chani")
+    message = LoginRequest(username="chani", password="hunter2")
+    assert protocol.decode(protocol.encode(message)) == message
+
+
+def test_register_request_round_trip():
+    message = RegisterRequest(username="chani", password="hunter2")
     assert protocol.decode(protocol.encode(message)) == message
 
 

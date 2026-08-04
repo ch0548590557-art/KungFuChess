@@ -3,7 +3,7 @@ import pytest
 from kungfu_chess.model.position import Position
 from kungfu_chess.network import protocol
 from kungfu_chess.network.client_core import ClientCore, SentRequest
-from kungfu_chess.network.login_prompt import LoginPrompt
+from kungfu_chess.network.login_prompt import LoginCredentials, LoginPrompt
 
 
 def _update(your_color=None):
@@ -94,11 +94,11 @@ def test_error_matching_a_pending_request_id_is_correlated_and_popped():
 
 
 class _FakeLoginPrompt(LoginPrompt):
-    def __init__(self, username: str):
-        self._username = username
+    def __init__(self, username: str, password: str = "hunter2", action: str = "login"):
+        self._credentials = LoginCredentials(action=action, username=username, password=password)
 
-    def get_username(self) -> str:
-        return self._username
+    def get_credentials(self) -> LoginCredentials:
+        return self._credentials
 
 
 def test_prepare_login_stores_and_returns_the_username():
@@ -117,14 +117,14 @@ def test_prepare_login_without_a_login_prompt_raises():
         client.prepare_login()
 
 
-def test_prepare_login_never_calls_anything_but_get_username():
-    """ClientCore must only ever call get_username() on the injected
+def test_prepare_login_never_calls_anything_but_get_credentials():
+    """ClientCore must only ever call get_credentials() on the injected
     LoginPrompt - it has no business knowing anything else about it
     (e.g. that it's shell-based)."""
 
     class _StrictLoginPrompt(LoginPrompt):
-        def get_username(self) -> str:
-            return "chani"
+        def get_credentials(self) -> LoginCredentials:
+            return LoginCredentials(action="login", username="chani", password="hunter2")
 
         def __getattr__(self, name):
             raise AssertionError(f"ClientCore touched unexpected attribute: {name}")

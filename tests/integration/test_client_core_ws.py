@@ -1,5 +1,7 @@
 import asyncio
 
+from kungfu_chess.auth.auth_service import SqliteAuthService
+from kungfu_chess.auth.sqlite_user_repository import SqliteUserRepository
 from kungfu_chess.model.position import Position
 from kungfu_chess.network import protocol
 from kungfu_chess.network.client_core import ClientCore
@@ -7,7 +9,8 @@ from kungfu_chess.network.ws_server import WebSocketServer
 
 
 async def _start_server(**kwargs):
-    server = await WebSocketServer(port=0, **kwargs).start()
+    auth_service = kwargs.pop("auth_service", None) or SqliteAuthService(SqliteUserRepository(":memory:"))
+    server = await WebSocketServer(auth_service, port=0, **kwargs).start()
     return server, f"ws://localhost:{server.port}"
 
 
@@ -16,14 +19,19 @@ async def _stop_server(server):
     await server.wait_closed()
 
 
-def _client(uri: str, username: str) -> ClientCore:
-    """A ClientCore with a username already set, bypassing prepare_login()/
-    LoginPrompt entirely - these tests don't care how the username was
-    collected, only that connect() sends it (see client_core.py: connect()
-    requires self.username to be set, since it sends LoginRequest before
-    ever waiting for the welcome)."""
+def _client(uri: str, username: str, password: str = "hunter2") -> ClientCore:
+    """A ClientCore with credentials already set, bypassing prepare_login()/
+    LoginPrompt entirely - these tests don't care how the credentials were
+    collected, only that connect() sends them (see client_core.py: connect()
+    requires self.username/self._password to be set, since it sends
+    RegisterRequest/LoginRequest before ever waiting for the welcome).
+    Defaults to the "register" action - every test starts a fresh
+    in-memory user DB via _start_server(), so every username used here is
+    always new."""
     client = ClientCore(uri)
     client.username = username
+    client._password = password
+    client._login_action = "register"
     return client
 
 

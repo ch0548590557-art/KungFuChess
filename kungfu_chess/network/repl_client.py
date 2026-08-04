@@ -11,15 +11,16 @@ whole stack (protocol -> SessionManager -> GameSession -> GameEngine ->
 RealTimeArbiter's tick-driven arrivals) works end to end. A real UI is
 later work, on top of this same ClientCore.
 
-WHY A USERNAME IS COLLECTED VIA ShellLoginPrompt BEFORE connect()
-(feature/home-screen-basic-login):
-This is a placeholder identity step (no password, no DB) - see
-login_prompt.py's own docstring for why ClientCore only ever calls
-LoginPrompt.get_username() and never knows a terminal is involved.
-prepare_login() only collects the username locally; connect() is what
-actually sends it (as a LoginRequest) and blocks until the server's
-welcome arrives - role assignment now follows login order, not raw
-connection order (see session.py/ws_server.py).
+WHY CREDENTIALS ARE COLLECTED VIA ShellLoginPrompt BEFORE connect()
+(feature/home-screen-basic-login Step 2; register/login + password added
+feature/auth-sqlite-elo Step 4):
+See login_prompt.py's own docstring for why ClientCore only ever calls
+LoginPrompt.get_credentials() and never knows a terminal is involved.
+prepare_login() only collects the action/username/password locally;
+connect() is what actually sends the right message (RegisterRequest or
+LoginRequest, depending on which action the shell prompt asked for) and
+blocks until the server's welcome arrives - role assignment follows
+login order, not raw connection order (see session.py/ws_server.py).
 
 Coordinates are (row, col), matching the internal model exactly (see
 model/position.py): row 0 is the BLACK back rank (top), row 7 is the

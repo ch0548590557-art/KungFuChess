@@ -27,6 +27,22 @@ A `Position` is always `{"row": int, "col": int}`.
 
 ## Client -> Server
 
+### `register_request` / `login_request`
+
+The very first message a connection must send (see `login_gate.py`) -
+nothing else is accepted until one of these succeeds. `register_request`
+creates a new account (default rating 1200); `login_request` checks the
+password against an existing one. Both are checked against `AuthService`
+(`auth/auth_service.py`); success rides on the welcome
+`game_state_update` that follows, failure on an `error` (see below).
+Neither carries a `request_id` - see the module docstring in
+`protocol.py` for why.
+
+```json
+{"type": "register_request", "username": "alice", "password": "hunter2"}
+{"type": "login_request", "username": "alice", "password": "hunter2"}
+```
+
 ### `move_request`
 
 ```json
@@ -86,9 +102,13 @@ at all (a `malformed_message`/`unknown_message_type` failure means the
 payload may not have decoded far enough to recover it).
 
 Known `reason` values as of this branch: `malformed_message`,
-`unknown_message_type`, `spectators_cannot_move`, `wrong_color`, plus
-whatever reason string `GameEngine.request_move`/`request_jump` returns
-for a rejected move (`game_over`, `motion_in_progress`,
-`outside_board`, `illegal_piece_move`, `empty_cell`, ...) - `Error`
-never invents its own vocabulary for chess-legality reasons, it just
-forwards GameEngine's.
+`unknown_message_type`, `login_required`, `login_timeout`,
+`username_taken` (a `register_request` for a name that's already taken),
+`invalid_credentials` (a `login_request` with an unknown username or
+wrong password - deliberately the same reason for both, so a client
+can't enumerate registered usernames), `spectators_cannot_move`,
+`wrong_color`, plus whatever reason string
+`GameEngine.request_move`/`request_jump` returns for a rejected move
+(`game_over`, `motion_in_progress`, `outside_board`,
+`illegal_piece_move`, `empty_cell`, ...) - `Error` never invents its own
+vocabulary for chess-legality reasons, it just forwards GameEngine's.

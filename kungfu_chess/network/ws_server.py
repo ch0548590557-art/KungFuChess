@@ -35,6 +35,17 @@ right away instead of waiting up to one tick interval for the first
 scheduled broadcast. As of feature/home-screen-basic-login (Step 3),
 this happens after a successful login, not on raw connect - see below.
 
+WHY WebSocketServer REQUIRES AN AuthService CONSTRUCTOR ARGUMENT WITH NO
+DEFAULT (feature/auth-sqlite-elo, Step 4):
+login_gate.await_login() now checks every RegisterRequest/LoginRequest
+against a real AuthService (auth/auth_service.py) instead of accepting
+any username - WebSocketServer is the transport-layer owner of that
+dependency (GameSession stays auth-agnostic, see game_session.py), so it
+must be handed one explicitly rather than silently constructing its own
+SqliteAuthService against some guessed default DB path. _run_forever()
+is the one call site that builds a real one for actual server runs;
+every test constructs its own (usually in-memory) instance.
+
 WHY A CONNECTION MUST LOG IN (LoginRequest) BEFORE ANYTHING ELSE
 HAPPENS, AND WHY IT HAS A TIMEOUT (feature/home-screen-basic-login,
 Step 3):
@@ -81,6 +92,8 @@ import asyncio
 
 import websockets
 
+from kungfu_chess.auth.auth_service import AuthService, SqliteAuthService
+from kungfu_chess.auth.sqlite_user_repository import SqliteUserRepository
 from kungfu_chess.network import protocol
 from kungfu_chess.network.game_session import GameSession, TICK_MS
 from kungfu_chess.network.login_gate import (
@@ -92,12 +105,14 @@ from kungfu_chess.network.login_gate import (
 
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 8765
+DEFAULT_USER_DB_PATH = "kungfuchess_users.sqlite3"
 
 
 class WebSocketServer:
-    def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
+    def __init__(self, auth_service: AuthService, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
                  tick_ms: int = TICK_MS,
                  login_timeout_seconds: float = DEFAULT_LOGIN_TIMEOUT_SECONDS):
+        self._auth_service = auth_service
         self._host = host
         self._port = port
         self._tick_ms = tick_ms
@@ -131,7 +146,7 @@ class WebSocketServer:
         self._game.connect(websocket)  # pending - no role, not in self._connections yet
         try:
             try:
-                login = await await_login(websocket, self._login_timeout_seconds)
+                username = await await_login(websocket, self._auth_service, self._login_timeout_seconds)
             except LoginTimeout:
                 print(f"[login-timeout] connections={len(self._connections)}")
                 await websocket.send(protocol.encode(protocol.Error(reason="login_timeout")))
@@ -141,7 +156,7 @@ class WebSocketServer:
                 await websocket.send(protocol.encode(protocol.Error(reason=exc.reason)))
                 return
 
-            session = self._game.login(websocket, login.username)
+            session = self._game.login(websocket, username)
             self._connections[websocket] = session
             print(f"[connect] username={session.username} role={session.role.name} "
                   f"color={session.color} connections={len(self._connections)}")
@@ -192,7 +207,8 @@ class WebSocketServer:
 
 
 async def _run_forever(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
-    server = await WebSocketServer(host, port).start()
+    auth_service = SqliteAuthService(SqliteUserRepository(DEFAULT_USER_DB_PATH))
+    server = await WebSocketServer(auth_service, host, port).start()
     print(f"KungFuChess WebSocket server listening on ws://{host}:{server.port}")
     await server.wait_closed()
 

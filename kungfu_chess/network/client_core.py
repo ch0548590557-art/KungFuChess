@@ -9,28 +9,33 @@ own integration tests discovered).
 
 WHY prepare_login() IS ITS OWN METHOD RATHER THAN SOMETHING __init__
 DOES AUTOMATICALLY (feature/home-screen-basic-login, Step 2):
-Fetching a username eagerly in __init__ would mean every existing
+Fetching credentials eagerly in __init__ would mean every existing
 ClientCore(uri) construction site - including every test that never
 cares about login - would suddenly block on a real LoginPrompt call.
 A separate, explicitly-called method means login_prompt is accepted
 (dependency injection, per this branch's own architecture note: the
-only method ever called on it is get_username() - ClientCore has no
+only method ever called on it is get_credentials() - ClientCore has no
 idea a terminal is involved) but nothing happens with it unless a
 caller (repl_client.py) actually asks.
 
-WHY connect() SENDS LoginRequest BEFORE WAITING FOR THE WELCOME
-(feature/home-screen-basic-login, Step 3):
+WHY connect() SENDS RegisterRequest/LoginRequest BEFORE WAITING FOR THE
+WELCOME (feature/home-screen-basic-login Step 3; password + register/
+login split added feature/auth-sqlite-elo Step 4):
 The server now withholds everything - including the welcome
-GameStateUpdate - until it receives a LoginRequest (see ws_server.py
-and login_gate.py: role assignment is keyed on login order, not raw
-TCP-accept order). connect() already blocks on self._welcomed.wait()
-(see below); if it waited for that *before* sending the login, every
-connection would deadlock instantly - the server waiting on a login
-that never comes, the client waiting on a welcome that never comes.
-Sending login right after opening the socket, before ever awaiting the
-welcome, is what keeps this from being a deadlock. connect() requires
-self.username to already be set (call prepare_login() first) - there is
-nothing meaningful to log in with otherwise.
+GameStateUpdate - until it receives a RegisterRequest or LoginRequest
+(see ws_server.py and login_gate.py: role assignment is keyed on login
+order, not raw TCP-accept order). connect() already blocks on
+self._welcomed.wait() (see below); if it waited for that *before*
+sending the login, every connection would deadlock instantly - the
+server waiting on a login that never comes, the client waiting on a
+welcome that never comes. Sending login right after opening the socket,
+before ever awaiting the welcome, is what keeps this from being a
+deadlock. connect() requires self.username and self._password to
+already be set (call prepare_login() first) - there is nothing
+meaningful to log in with otherwise. Which message type it sends
+(RegisterRequest vs LoginRequest) follows whichever action the prompt
+returned (self._login_action), stored verbatim from LoginCredentials.action
+rather than re-derived.
 
 WHY send_move()/send_jump() ARE FIRE-AND-FORGET, AND WHY THAT REQUIRES
 request_id CORRELATION RATHER THAN JUST DOCUMENTING A "send one at a
@@ -92,16 +97,25 @@ class ClientCore:
         self.last_state: Optional[protocol.GameStateUpdate] = None
         self.last_error: Optional[protocol.Error] = None
         self.username: Optional[str] = None
+        self._password: Optional[str] = None
+        self._login_action: str = "login"
 
     def prepare_login(self) -> str:
-        """Collects a username via the injected LoginPrompt and stores
-        it as self.username. Must be called before connect() if a
-        caller wants a username at all (see repl_client.py) - nothing
-        here talks to the network; sending it to the server is a later
-        step of this branch."""
+        """Collects credentials via the injected LoginPrompt and stores
+        them (username, password, login-vs-register action). Must be
+        called before connect() if a caller wants to log in at all (see
+        repl_client.py) - nothing here talks to the network; sending
+        credentials to the server is connect()'s job. Returns just the
+        username, matching this method's pre-Step-4 signature - callers
+        that only care about a display name (e.g. repl_client's
+        "logging in as: ..." message) don't need to reach into private
+        state for it."""
         if self._login_prompt is None:
             raise RuntimeError("prepare_login() called without a login_prompt")
-        self.username = self._login_prompt.get_username()
+        credentials = self._login_prompt.get_credentials()
+        self.username = credentials.username
+        self._password = credentials.password
+        self._login_action = credentials.action
         return self.username
 
     @property
@@ -117,11 +131,16 @@ class ClientCore:
         self._on_error = handler
 
     async def connect(self) -> None:
-        if self.username is None:
-            raise RuntimeError("connect() called before prepare_login() - no username to log in with")
+        if self.username is None or self._password is None:
+            raise RuntimeError("connect() called before prepare_login() - no credentials to log in with")
         self._connection = await websockets.connect(self._uri)
         self._listen_task = asyncio.ensure_future(self._listen())
-        await self._connection.send(protocol.encode(protocol.LoginRequest(username=self.username)))
+        login_message = (
+            protocol.RegisterRequest(username=self.username, password=self._password)
+            if self._login_action == "register"
+            else protocol.LoginRequest(username=self.username, password=self._password)
+        )
+        await self._connection.send(protocol.encode(login_message))
         await self._welcomed.wait()
 
     async def close(self) -> None:
