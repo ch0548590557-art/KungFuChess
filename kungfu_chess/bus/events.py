@@ -51,3 +51,14 @@ class MoveCompletedEvent:
 class FrameTickEvent:
     snapshot: Any  # engine.game_engine.GameSnapshot
     now_ms: int
+
+
+@dataclass
+class GameEndedEvent:
+    """Published once, the moment a game ends - see game_engine.py's
+    wait() for why this fires from the exact same spot GameState.game_over/
+    winner get set. winner_color is 'w'/'b' ('w' won, or vice versa);
+    reason is a stable code (currently only "king_captured" - see
+    game_engine.py for why resignation isn't implemented yet)."""
+    winner_color: str
+    reason: str

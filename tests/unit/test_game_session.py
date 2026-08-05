@@ -8,6 +8,36 @@ def _login(game: GameSession, connection, username: str):
     return game.login(connection, username)
 
 
+class _FakeEloService:
+    def __init__(self):
+        self.calls = []
+
+    def record_game_result(self, white_username, black_username, winner_color):
+        self.calls.append((white_username, black_username, winner_color))
+
+
+def _capture_black_king(game: GameSession, white) -> None:
+    """Drives a full legal move sequence through White's queenside rook
+    that ends with it capturing Black's king - no shortcuts, no reaching
+    into engine internals, since there is no check/checkmate/"illegal to
+    expose your king" rule in this engine (see engine/notation.py) that
+    would need working around. Exercises a real GameEndedEvent through
+    GameSession's public API exactly the way a live game would produce
+    one."""
+    def move(source, destination):
+        reply = game.handle_message(white, protocol.encode(
+            protocol.MoveRequest(request_id="x", source=source, destination=destination)
+        ))
+        assert reply is None, f"unexpected rejection: {reply}"
+        game.tick(5000)  # comfortably longer than any single leg below
+
+    move(Position(6, 0), Position(4, 0))  # clear the rook's own pawn
+    move(Position(7, 0), Position(5, 0))  # rook advances up the now-open file
+    move(Position(5, 0), Position(5, 4))  # rook slides across to the e-file
+    move(Position(5, 4), Position(1, 4))  # rook captures Black's e-pawn
+    move(Position(1, 4), Position(0, 4))  # rook captures Black's king
+
+
 def test_legal_move_from_correct_color_is_accepted():
     game = GameSession()
     white = _login(game, "conn-white", "alice")
@@ -211,3 +241,35 @@ def test_state_update_for_usernames_are_none_before_both_players_have_logged_in(
     update = game.state_update_for(white)
     assert update.white_username == "alice"
     assert update.black_username is None
+
+
+def test_king_capture_triggers_elo_update_with_both_usernames_and_winner():
+    elo = _FakeEloService()
+    game = GameSession(elo_service=elo)
+    white = _login(game, "conn-white", "alice")
+    _login(game, "conn-black", "bob")
+
+    _capture_black_king(game, white)
+
+    assert elo.calls == [("alice", "bob", "w")]
+
+
+def test_game_ending_without_an_elo_service_does_not_raise():
+    game = GameSession()  # elo_service defaults to None
+    white = _login(game, "conn-white", "alice")
+    _login(game, "conn-black", "bob")
+
+    _capture_black_king(game, white)  # must not raise
+
+
+def test_elo_service_is_not_called_if_a_color_never_logged_in():
+    """Nobody logged in as Black (e.g. a solo chess-logic test) - the
+    board still has a black king to capture, but there's no black
+    username to rate, so record_game_result must never be called."""
+    elo = _FakeEloService()
+    game = GameSession(elo_service=elo)
+    white = _login(game, "conn-white", "alice")
+
+    _capture_black_king(game, white)
+
+    assert elo.calls == []

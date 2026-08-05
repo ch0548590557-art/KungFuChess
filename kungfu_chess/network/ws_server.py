@@ -35,16 +35,21 @@ right away instead of waiting up to one tick interval for the first
 scheduled broadcast. As of feature/home-screen-basic-login (Step 3),
 this happens after a successful login, not on raw connect - see below.
 
-WHY WebSocketServer REQUIRES AN AuthService CONSTRUCTOR ARGUMENT WITH NO
-DEFAULT (feature/auth-sqlite-elo, Step 4):
-login_gate.await_login() now checks every RegisterRequest/LoginRequest
+WHY WebSocketServer REQUIRES AuthService/EloService CONSTRUCTOR ARGUMENTS
+WITH NO DEFAULT (auth_service: feature/auth-sqlite-elo Step 4; elo_service:
+Step 5):
+login_gate.await_login() checks every RegisterRequest/LoginRequest
 against a real AuthService (auth/auth_service.py) instead of accepting
-any username - WebSocketServer is the transport-layer owner of that
-dependency (GameSession stays auth-agnostic, see game_session.py), so it
-must be handed one explicitly rather than silently constructing its own
-SqliteAuthService against some guessed default DB path. _run_forever()
-is the one call site that builds a real one for actual server runs;
-every test constructs its own (usually in-memory) instance.
+any username, and GameSession updates ratings through a real EloService
+(elo/elo_service.py) when a game ends - WebSocketServer is the
+transport-layer owner of both dependencies (GameSession itself stays
+auth/rating-agnostic beyond the one EloService reference it's handed,
+see game_session.py), so it must be handed both explicitly rather than
+silently constructing its own against some guessed default DB path.
+_run_forever() is the one call site that builds real ones (sharing a
+single UserRepository, so a login and a rating update touch the same
+users table) for actual server runs; every test constructs its own
+(usually in-memory) instances.
 
 WHY A CONNECTION MUST LOG IN (LoginRequest) BEFORE ANYTHING ELSE
 HAPPENS, AND WHY IT HAS A TIMEOUT (feature/home-screen-basic-login,
@@ -94,6 +99,7 @@ import websockets
 
 from kungfu_chess.auth.auth_service import AuthService, SqliteAuthService
 from kungfu_chess.auth.sqlite_user_repository import SqliteUserRepository
+from kungfu_chess.elo.elo_service import EloService
 from kungfu_chess.network import protocol
 from kungfu_chess.network.game_session import GameSession, TICK_MS
 from kungfu_chess.network.login_gate import (
@@ -109,7 +115,8 @@ DEFAULT_USER_DB_PATH = "kungfuchess_users.sqlite3"
 
 
 class WebSocketServer:
-    def __init__(self, auth_service: AuthService, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
+    def __init__(self, auth_service: AuthService, elo_service: EloService,
+                 host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
                  tick_ms: int = TICK_MS,
                  login_timeout_seconds: float = DEFAULT_LOGIN_TIMEOUT_SECONDS):
         self._auth_service = auth_service
@@ -119,7 +126,7 @@ class WebSocketServer:
         self._login_timeout_seconds = login_timeout_seconds
         self._server = None
         self._tick_task = None
-        self._game = GameSession()
+        self._game = GameSession(elo_service)
         self._game.on_move_completed(self._schedule_broadcast)
         self._connections = {}  # websocket -> Session, logged-in connections only
 
@@ -207,8 +214,10 @@ class WebSocketServer:
 
 
 async def _run_forever(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
-    auth_service = SqliteAuthService(SqliteUserRepository(DEFAULT_USER_DB_PATH))
-    server = await WebSocketServer(auth_service, host, port).start()
+    user_repository = SqliteUserRepository(DEFAULT_USER_DB_PATH)
+    auth_service = SqliteAuthService(user_repository)
+    elo_service = EloService(user_repository)
+    server = await WebSocketServer(auth_service, elo_service, host, port).start()
     print(f"KungFuChess WebSocket server listening on ws://{host}:{server.port}")
     await server.wait_closed()
 

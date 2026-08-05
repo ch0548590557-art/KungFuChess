@@ -2,6 +2,7 @@ import asyncio
 
 from kungfu_chess.auth.auth_service import SqliteAuthService
 from kungfu_chess.auth.sqlite_user_repository import SqliteUserRepository
+from kungfu_chess.elo.elo_service import EloService
 from kungfu_chess.model.position import Position
 from kungfu_chess.network import protocol
 from kungfu_chess.network.client_core import ClientCore
@@ -9,8 +10,12 @@ from kungfu_chess.network.ws_server import WebSocketServer
 
 
 async def _start_server(**kwargs):
-    auth_service = kwargs.pop("auth_service", None) or SqliteAuthService(SqliteUserRepository(":memory:"))
-    server = await WebSocketServer(auth_service, port=0, **kwargs).start()
+    # A fresh in-memory UserRepository per server, shared by auth_service
+    # and elo_service - see test_ws_server.py's _start() for why.
+    user_repository = SqliteUserRepository(":memory:")
+    auth_service = SqliteAuthService(user_repository)
+    elo_service = EloService(user_repository)
+    server = await WebSocketServer(auth_service, elo_service, port=0, **kwargs).start()
     return server, f"ws://localhost:{server.port}"
 
 

@@ -4,7 +4,13 @@ from kungfu_chess.model.position import Position
 from kungfu_chess.model.game_state import GameState
 from kungfu_chess.engine.game_engine import GameEngine
 from kungfu_chess.bus.event_bus import EventBus
-from kungfu_chess.bus.events import MoveCompletedEvent, MoveRequestedEvent, JumpRequestedEvent
+from kungfu_chess.bus.events import (
+    GameEndedEvent,
+    JumpRequestedEvent,
+    MoveCompletedEvent,
+    MoveRequestedEvent,
+)
+from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
 import kungfu_chess.config as config
 
 
@@ -89,6 +95,36 @@ def test_king_capture_sets_game_over():
     snap = engine.snapshot()
     assert snap.game_over is True
     assert snap.winner == 'w'
+
+
+def test_king_capture_publishes_game_ended_event():
+    bus = EventBus()
+    received = []
+    bus.subscribe(GameEndedEvent, received.append)
+    board = Board(4, 4)
+    board.add_piece(make_piece(1, 'w', 'R', 0, 0))
+    board.add_piece(make_piece(2, 'b', 'K', 0, 3))
+    engine = GameEngine(board, arbiter=RealTimeArbiter(), bus=bus)
+
+    engine.request_move(Position(0, 0), Position(0, 3))
+    engine.wait(3000)
+
+    assert received == [GameEndedEvent(winner_color='w', reason='king_captured')]
+
+
+def test_a_non_king_capture_does_not_publish_game_ended_event():
+    bus = EventBus()
+    received = []
+    bus.subscribe(GameEndedEvent, received.append)
+    board = Board(4, 4)
+    board.add_piece(make_piece(1, 'w', 'R', 0, 0))
+    board.add_piece(make_piece(2, 'b', 'P', 0, 3))
+    engine = GameEngine(board, arbiter=RealTimeArbiter(), bus=bus)
+
+    engine.request_move(Position(0, 0), Position(0, 3))
+    engine.wait(3000)
+
+    assert received == []
 
 
 def test_command_after_game_over_is_rejected_and_board_unchanged():

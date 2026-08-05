@@ -50,6 +50,21 @@ sockets and send bytes; GameSession's only obligation is to say "a move
 just completed" the moment MoveCompletedEvent fires, and let whoever
 owns the sockets decide what a broadcast means.
 
+WHY GameSession SUBSCRIBES TO GameEndedEvent AND CALLS EloService ITSELF,
+RATHER THAN GameEngine CALLING EloService DIRECTLY (feature/auth-sqlite-
+elo, Step 5):
+GameEngine publishes GameEndedEvent (see its own module docstring) but
+has no idea what a "username" is - it only ever deals in board
+coordinates and colors. GameSession is the one object that knows both
+the chess result (via the same EventBus it already wires GameEngine
+into) and the players' identities (via SessionManager.username_for_role,
+already used by state_update_for()'s white_username/black_username) - so
+it's the only layer that can translate "white just won" into "update
+alice's and bob's ratings" at all. elo_service is accepted the same way
+auth_service is at the WebSocketServer layer: Optional so the many
+existing chess-only GameSession() tests don't need to care, but never
+silently swallowed - see _handle_game_ended's own guard comments.
+
 WHY connect()/login() ARE SEPARATE (feature/home-screen-basic-login,
 Step 3):
 connect() just registers a socket (SessionManager.register_connection -
@@ -64,7 +79,8 @@ and a username, who are they now."
 from typing import Callable, Optional
 
 from kungfu_chess.bus.event_bus import EventBus
-from kungfu_chess.bus.events import MoveCompletedEvent
+from kungfu_chess.bus.events import GameEndedEvent, MoveCompletedEvent
+from kungfu_chess.elo.elo_service import EloService
 from kungfu_chess.engine.game_engine import GameEngine
 from kungfu_chess.io.board_parser import BoardParser
 from kungfu_chess.network import protocol
@@ -90,13 +106,15 @@ STARTING_POSITION = [
 
 
 class GameSession:
-    def __init__(self):
+    def __init__(self, elo_service: Optional[EloService] = None):
         board = BoardParser().parse(STARTING_POSITION)
         self._sessions = SessionManager()
         self._bus = EventBus()
         self._engine = GameEngine(board, bus=self._bus)
+        self._elo_service = elo_service
         self._on_move_completed: Optional[Callable[[], None]] = None
         self._bus.subscribe(MoveCompletedEvent, self._handle_move_completed)
+        self._bus.subscribe(GameEndedEvent, self._handle_game_ended)
 
     def connect(self, connection) -> Session:
         return self._sessions.register_connection(connection)
@@ -113,6 +131,18 @@ class GameSession:
     def _handle_move_completed(self, event: MoveCompletedEvent) -> None:
         if self._on_move_completed is not None:
             self._on_move_completed()
+
+    def _handle_game_ended(self, event: GameEndedEvent) -> None:
+        if self._elo_service is None:
+            return
+        white_username = self._sessions.username_for_role(PlayerRole.WHITE)
+        black_username = self._sessions.username_for_role(PlayerRole.BLACK)
+        if white_username is None or black_username is None:
+            # Nobody ever logged in as one of the colors (e.g. this
+            # GameSession is only used in a chess-logic test with no real
+            # players) - there is nobody to rate.
+            return
+        self._elo_service.record_game_result(white_username, black_username, event.winner_color)
 
     def handle_message(self, session: Session, raw: str) -> Optional[protocol.Error]:
         try:

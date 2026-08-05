@@ -40,6 +40,19 @@ piece-scoped and reads the concurrency cap from RealTimeArbiter's config
 knob, so this one substitution is the entire feature at the GameEngine
 level (see the longer architecture note in real_time_arbiter.py).
 
+WHY GameEndedEvent IS PUBLISHED FROM THE SAME wait() BRANCH THAT SETS
+GameState.game_over/winner (feature/auth-sqlite-elo, Step 5):
+Nothing upstream of GameEngine (network layer, EloService) can observe
+game_over flipping to True except by polling GameSnapshot every tick -
+publishing an event the moment it happens lets a subscriber (GameSession,
+which knows the players' usernames GameEngine deliberately doesn't - see
+Section 8) react exactly once, right when it matters, instead of diffing
+snapshots. reason is currently always "king_captured" because that's the
+only way GameEngine can end a game today - there is no resignation
+mechanism in this codebase; if one is added later (a different branch),
+it would publish the same event with a different reason string, not a
+new event type.
+
 WHY MoveResult IS ITS OWN DATACLASS (mirrors MoveValidation's rationale):
 Same reasoning as RuleEngine.MoveValidation: a named result type reads
 better than a tuple at call sites (`result.is_accepted` vs `result[0]`),
@@ -58,7 +71,12 @@ from kungfu_chess.rules import promotion_rules
 from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
 from kungfu_chess.engine import notation
 from kungfu_chess.bus.event_bus import EventBus
-from kungfu_chess.bus.events import MoveCompletedEvent, MoveRequestedEvent, JumpRequestedEvent
+from kungfu_chess.bus.events import (
+    GameEndedEvent,
+    JumpRequestedEvent,
+    MoveCompletedEvent,
+    MoveRequestedEvent,
+)
 import kungfu_chess.config as config
 
 
@@ -159,6 +177,8 @@ class GameEngine:
             if event.captured_kind == config.KING:
                 capturer = self._board.piece_by_id(event.piece_id)
                 self._state.end_game(winner_color=capturer.color)
+                if self._bus is not None:
+                    self._bus.publish(GameEndedEvent(winner_color=capturer.color, reason="king_captured"))
             if is_capture:
                 capturer = self._board.piece_by_id(event.piece_id)
                 captured_color = 'b' if capturer.color == 'w' else 'w'
