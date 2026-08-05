@@ -9,9 +9,8 @@ def test_login_prompt_cannot_be_instantiated_directly():
 
 
 def test_shell_login_prompt_reads_action_username_and_password(monkeypatch):
-    answers = iter(["login", "  chani  "])
+    answers = iter(["login", "  chani  ", "secret"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
-    monkeypatch.setattr("kungfu_chess.network.login_prompt.getpass", lambda prompt="": "secret")
 
     credentials = ShellLoginPrompt().get_credentials()
 
@@ -19,9 +18,8 @@ def test_shell_login_prompt_reads_action_username_and_password(monkeypatch):
 
 
 def test_shell_login_prompt_accepts_register_action(monkeypatch):
-    answers = iter(["register", "chani"])
+    answers = iter(["register", "chani", "secret"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
-    monkeypatch.setattr("kungfu_chess.network.login_prompt.getpass", lambda prompt="": "secret")
 
     credentials = ShellLoginPrompt().get_credentials()
 
@@ -29,9 +27,8 @@ def test_shell_login_prompt_accepts_register_action(monkeypatch):
 
 
 def test_shell_login_prompt_normalizes_action_case_and_whitespace(monkeypatch):
-    answers = iter(["  LOGIN  ", "chani"])
+    answers = iter(["  LOGIN  ", "chani", "secret"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
-    monkeypatch.setattr("kungfu_chess.network.login_prompt.getpass", lambda prompt="": "secret")
 
     credentials = ShellLoginPrompt().get_credentials()
 
@@ -39,9 +36,8 @@ def test_shell_login_prompt_normalizes_action_case_and_whitespace(monkeypatch):
 
 
 def test_shell_login_prompt_reprompts_until_a_valid_action_is_given(monkeypatch):
-    answers = iter(["banana", "still not it", "register", "chani"])
+    answers = iter(["banana", "still not it", "register", "chani", "secret"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
-    monkeypatch.setattr("kungfu_chess.network.login_prompt.getpass", lambda prompt="": "secret")
 
     credentials = ShellLoginPrompt().get_credentials()
 
@@ -49,17 +45,35 @@ def test_shell_login_prompt_reprompts_until_a_valid_action_is_given(monkeypatch)
     assert credentials.username == "chani"
 
 
-def test_shell_login_prompt_passes_a_prompt_string_to_getpass(monkeypatch):
-    seen = []
-
-    def fake_getpass(prompt=""):
-        seen.append(prompt)
-        return "secret"
-
-    answers = iter(["login", "chani"])
+def test_shell_login_prompt_does_not_strip_the_password(monkeypatch):
+    """Unlike username/action, a password is taken verbatim - stripping
+    it would silently reject any password with meaningful leading/
+    trailing whitespace instead of just passing it through to the server
+    to accept or reject."""
+    answers = iter(["login", "chani", "  secret with spaces  "])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
-    monkeypatch.setattr("kungfu_chess.network.login_prompt.getpass", fake_getpass)
 
-    ShellLoginPrompt().get_credentials()
+    credentials = ShellLoginPrompt().get_credentials()
 
-    assert seen and "password" in seen[0].lower()
+    assert credentials.password == "  secret with spaces  "
+
+
+def test_shell_login_prompt_uses_plain_input_for_the_password_prompt(monkeypatch):
+    """Regression test: getpass.getpass() was tried first and found to
+    hang indefinitely with no error in terminals that don't host a real
+    Win32 console (e.g. Git Bash/MinTTY) - see the module docstring.
+    get_credentials() must go through builtins.input for every prompt,
+    including the password, never getpass."""
+    seen_prompts = []
+
+    def fake_input(prompt=""):
+        seen_prompts.append(prompt)
+        answers = ["login", "chani", "secret"]
+        return answers[len(seen_prompts) - 1]
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    credentials = ShellLoginPrompt().get_credentials()
+
+    assert credentials.password == "secret"
+    assert any("password" in p.lower() for p in seen_prompts)

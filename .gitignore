@@ -33,3 +33,7 @@ coverage.xml
 .DS_Store
 Thumbs.db
 .copilot-specs-cache/
+
+# --- KungFuChess local secrets / runtime data ---
+.env
+*.sqlite3

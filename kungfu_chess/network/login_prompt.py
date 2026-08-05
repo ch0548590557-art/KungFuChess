@@ -25,21 +25,26 @@ containers - three same-typed strings in a tuple would be positional and
 easy to transpose (action/username/password) with no error until a wrong
 Error reason comes back from the server.
 
-WHY ShellLoginPrompt USES getpass.getpass() FOR THE PASSWORD BUT input()
-FOR EVERYTHING ELSE:
-getpass() suppresses terminal echo so a password typed at this prompt
-never appears on screen or ends up in shell scrollback - ordinary input()
-has no such option. Both are still safe to call directly here for the
-same reason plain input() was safe in the username-only version of this
-file: get_credentials() runs synchronously from
-ClientCore.prepare_login(), called before connect() starts anything
-concurrent (see client_core.py's own note on why this differs from
-repl_client's command loop, which had to move off input() entirely).
+WHY ShellLoginPrompt USES PLAIN input() FOR THE PASSWORD TOO, NOT
+getpass.getpass() (discovered live, 2026-08-05):
+getpass() was tried first, for the usual reason (suppressing terminal
+echo). On Windows, getpass falls through to msvcrt.getwch(), which talks
+to the real Win32 console API directly rather than reading through
+sys.stdin - in any terminal that doesn't host a genuine Win32 console
+(Git Bash/MinTTY being the common case, but other terminal wrappers too),
+that call doesn't raise, it just hangs forever waiting on a console that
+was never connected to what the user is actually typing into - "can't
+enter a password" with no error at all. repl_client.py is explicitly a
+manual dev/playtesting tool (see its own module docstring), not a
+security boundary - the actual secret-handling guarantee is server-side
+(password_hashing.py's salt+pepper), so trading away local echo
+suppression for "works in every terminal, no silent hangs" is the right
+call here specifically, even though it wouldn't be for a production
+login screen.
 """
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from getpass import getpass
 
 _VALID_ACTIONS = ("login", "register")
 
@@ -63,5 +68,5 @@ class ShellLoginPrompt(LoginPrompt):
         while action not in _VALID_ACTIONS:
             action = input("please type 'login' or 'register': ").strip().lower()
         username = input("username: ").strip()
-        password = getpass("password: ")
+        password = input("password: ")
         return LoginCredentials(action=action, username=username, password=password)
