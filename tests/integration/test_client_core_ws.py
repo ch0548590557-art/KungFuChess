@@ -10,12 +10,13 @@ from kungfu_chess.network.ws_server import WebSocketServer
 
 
 async def _start_server(**kwargs):
-    # A fresh in-memory UserRepository per server, shared by auth_service
-    # and elo_service - see test_ws_server.py's _start() for why.
+    # A fresh in-memory UserRepository per server, shared by auth_service,
+    # elo_service, and (feature/matchmaking-disconnect, Step 2) matchmaking
+    # rating lookups - see test_ws_server.py's _start() for why.
     user_repository = SqliteUserRepository(":memory:")
     auth_service = SqliteAuthService(user_repository)
     elo_service = EloService(user_repository)
-    server = await WebSocketServer(auth_service, elo_service, port=0, **kwargs).start()
+    server = await WebSocketServer(auth_service, elo_service, user_repository, port=0, **kwargs).start()
     return server, f"ws://localhost:{server.port}"
 
 
@@ -40,13 +41,37 @@ def _client(uri: str, username: str, password: str = "hunter2") -> ClientCore:
     return client
 
 
-def test_two_clients_learn_their_assigned_colors_on_connect():
+async def _match(first: ClientCore, second: ClientCore) -> None:
+    """Sends PlayRequest on both (already-connected) clients and waits
+    for each to see itself assigned a color - the feature/matchmaking-
+    disconnect Step 2 replacement for what connect() used to do by
+    itself (see session.py: login no longer assigns a role). `first`
+    gets a head start so it's guaranteed to end up White (decision 3:
+    whoever waited longer becomes White) - a real network round trip
+    has no other way to guarantee queue order deterministically."""
+    await first.send_play_request()
+    await asyncio.sleep(0.1)
+    await second.send_play_request()
+
+    async def _wait_for_color(client: ClientCore) -> None:
+        while client.my_color is None:
+            await asyncio.sleep(0.02)
+
+    await asyncio.wait_for(_wait_for_color(first), timeout=5)
+    await asyncio.wait_for(_wait_for_color(second), timeout=5)
+
+
+def test_two_clients_get_matched_and_assigned_colors_via_play_request():
     async def scenario():
         server, uri = await _start_server()
         white, black = _client(uri, "alice"), _client(uri, "bob")
         try:
             await white.connect()
             await black.connect()
+            assert white.my_color is None  # login alone assigns no role
+            assert black.my_color is None
+
+            await _match(white, black)
 
             assert white.my_color == "w"
             assert black.my_color == "b"
@@ -71,6 +96,7 @@ def test_legal_move_is_broadcast_to_both_clients():
         try:
             await white.connect()
             await black.connect()
+            await _match(white, black)
 
             await white.send_move(Position(6, 4), Position(4, 4))
 
@@ -97,6 +123,7 @@ def test_illegal_move_reaches_only_the_sender_as_an_error():
         try:
             await white.connect()
             await black.connect()
+            await _match(white, black)
 
             # A rook has no legal diagonal hop from its own starting cell.
             await white.send_move(Position(7, 0), Position(5, 2))
@@ -123,7 +150,7 @@ def test_two_in_flight_requests_are_each_matched_to_their_own_error():
     Error belongs to, not just that "something" failed."""
     async def scenario():
         server, uri = await _start_server()
-        white = _client(uri, "alice")
+        white, black = _client(uri, "alice"), _client(uri, "bob")
         received = []
         done = asyncio.Event()
 
@@ -136,6 +163,8 @@ def test_two_in_flight_requests_are_each_matched_to_their_own_error():
 
         try:
             await white.connect()
+            await black.connect()
+            await _match(white, black)  # white needs a real role to send moves at all
 
             # Neither is a legal rook move from its own starting cell.
             first_id = await white.send_move(Position(7, 0), Position(5, 2))
@@ -151,6 +180,7 @@ def test_two_in_flight_requests_are_each_matched_to_their_own_error():
             assert by_request_id[second_id].destination == Position(6, 1)
         finally:
             await white.close()
+            await black.close()
             await _stop_server(server)
 
     asyncio.run(scenario())
@@ -159,11 +189,14 @@ def test_two_in_flight_requests_are_each_matched_to_their_own_error():
 def test_dispatcher_still_finds_the_error_under_frequent_broadcast_interleaving():
     async def scenario():
         server, uri = await _start_server(tick_ms=10)  # fast tick to maximize interleaving
-        white = _client(uri, "alice")
+        white, black = _client(uri, "alice"), _client(uri, "bob")
         error_seen = asyncio.Event()
         white.on_error(lambda error, request: error_seen.set())
         try:
             await white.connect()
+            await black.connect()
+            await _match(white, black)
+
             request_id = await white.send_move(Position(7, 0), Position(5, 2))
             await asyncio.wait_for(error_seen.wait(), timeout=5)
             assert white.last_error == protocol.Error(
@@ -171,24 +204,30 @@ def test_dispatcher_still_finds_the_error_under_frequent_broadcast_interleaving(
             )
         finally:
             await white.close()
+            await black.close()
             await _stop_server(server)
 
     asyncio.run(scenario())
 
 
-def test_second_to_connect_but_first_to_login_gets_white():
-    """Proves role assignment follows login order, not the order
-    ClientCore.connect() happened to be awaited in - see session.py's
-    complete_login()."""
+def test_play_request_order_determines_white_not_connect_order():
+    """Role assignment no longer follows connect/login order at all
+    (feature/matchmaking-disconnect, Step 2 - see session.py) - only
+    queue-wait order does. Proves that even though `first_to_connect`
+    connects (and logs in) first, if it sends PlayRequest *after* the
+    other client, it ends up Black."""
     async def scenario():
         server, uri = await _start_server()
         first_to_connect = _client(uri, "alice")
         second_to_connect = _client(uri, "bob")
         try:
-            # Awaiting second_to_connect's connect() to completion before
-            # even starting first_to_connect's means it logs in first.
-            await second_to_connect.connect()
             await first_to_connect.connect()
+            await second_to_connect.connect()
+            assert first_to_connect.my_color is None
+            assert second_to_connect.my_color is None
+
+            # second_to_connect queues first this time.
+            await _match(second_to_connect, first_to_connect)
 
             assert second_to_connect.my_color == "w"
             assert first_to_connect.my_color == "b"

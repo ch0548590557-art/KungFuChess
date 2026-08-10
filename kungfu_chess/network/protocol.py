@@ -90,6 +90,23 @@ wrong. Like LoginRequest, RegisterRequest carries no request_id (see
 above) and gets no dedicated reply - success still rides on the welcome
 GameStateUpdate; failure rides on Error(reason="username_taken").
 
+WHY PlayRequest/CancelPlayRequest CARRY NO FIELDS AT ALL (feature/
+matchmaking-disconnect, Step 1):
+By the time either can arrive, the connection has already completed
+login_gate.py's await_login() - the server already knows this
+connection's username, and rating is looked up server-side from
+UserRepository rather than trusted from the client (a client could
+otherwise just claim whatever rating gets it an easy match). There is
+nothing left for either message to carry. Neither gets a request_id
+either: like LoginRequest, PlayRequest isn't a GameEngine action with an
+immediate accept/reject - a match (or a matchmaking_timeout Error) is
+reported later, asynchronously, once MatchmakingQueue actually resolves
+it (see matchmaking_queue.py), not as a direct reply to this message.
+CancelPlayRequest is deliberately idempotent one level up, in
+MatchmakingQueue.cancel() - sending it while not queued (never queued,
+or already matched/timed out) is a normal race, not a client error, so
+it produces no Error either.
+
 WHY GameStateUpdate CARRIES white_username/black_username (feature/
 home-screen-basic-login, added after login-order role assignment
 shipped):
@@ -101,6 +118,18 @@ in as that color yet, e.g. right after the first player connects) and
 are broadcast identically to every recipient (unlike your_color, which
 is personalized per connection) - "who is White" is the same fact for
 everyone watching, not something that varies by who's asking.
+
+WHY GameStateUpdate CARRIES remaining_seconds (feature/matchmaking-
+disconnect, Step 3):
+When an active WHITE/BLACK player's connection drops, everyone watching
+the game - not just that player, who isn't even connected to see it -
+needs to know a resignation clock is running. Rather than invent a fifth
+message type or a separate broadcast channel for this (decision 8 - see
+session.py's remaining_disconnect_seconds()), it rides along on the
+GameStateUpdate broadcast that already goes out every tick, exactly like
+white_username/black_username: broadcast-identical (not personalized -
+"is someone disconnected" is the same fact for everyone), None whenever
+nobody is currently disconnected.
 """
 
 import json
@@ -133,6 +162,16 @@ class LoginRequest:
 class RegisterRequest:
     username: str
     password: str
+
+
+@dataclass
+class PlayRequest:
+    pass
+
+
+@dataclass
+class CancelPlayRequest:
+    pass
 
 
 @dataclass
@@ -178,11 +217,13 @@ class GameStateUpdate:
     your_color: Optional[str] = None  # "w" | "b" | None (spectator) - see module docstring
     white_username: Optional[str] = None  # None until someone has logged in as White
     black_username: Optional[str] = None  # None until someone has logged in as Black
+    remaining_seconds: Optional[int] = None  # None unless a WHITE/BLACK player is currently disconnected
 
     @staticmethod
     def from_snapshot(
         snapshot, your_color: Optional[str] = None,
         white_username: Optional[str] = None, black_username: Optional[str] = None,
+        remaining_seconds: Optional[int] = None,
     ) -> "GameStateUpdate":
         pieces = [
             PieceInfo(kind=kind, color=color, row=row, col=col, state=state)
@@ -215,6 +256,7 @@ class GameStateUpdate:
             your_color=your_color,
             white_username=white_username,
             black_username=black_username,
+            remaining_seconds=remaining_seconds,
         )
 
 
@@ -234,13 +276,18 @@ class UnknownMessageType(ValueError):
     catch it without changes."""
 
 
-Message = Union[MoveRequest, JumpRequest, LoginRequest, RegisterRequest, GameStateUpdate, Error]
+Message = Union[
+    MoveRequest, JumpRequest, LoginRequest, RegisterRequest,
+    PlayRequest, CancelPlayRequest, GameStateUpdate, Error,
+]
 
 _TYPE_NAMES = {
     MoveRequest: "move_request",
     JumpRequest: "jump_request",
     LoginRequest: "login_request",
     RegisterRequest: "register_request",
+    PlayRequest: "play_request",
+    CancelPlayRequest: "cancel_play_request",
     GameStateUpdate: "game_state_update",
     Error: "error",
 }
@@ -292,5 +339,6 @@ def decode(raw: str) -> Message:
             your_color=payload.get("your_color"),
             white_username=payload.get("white_username"),
             black_username=payload.get("black_username"),
+            remaining_seconds=payload.get("remaining_seconds"),
         )
     return cls(**payload)  # Error/LoginRequest/RegisterRequest - all flat, no nested Position fields

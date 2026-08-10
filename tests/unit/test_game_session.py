@@ -1,11 +1,40 @@
+import pytest
+
+from kungfu_chess.bus.event_bus import EventBus
+from kungfu_chess.bus.events import MatchFoundEvent
 from kungfu_chess.model.position import Position
 from kungfu_chess.network import protocol
-from kungfu_chess.network.game_session import GameSession
+from kungfu_chess.network.game_session import GameAlreadyEndedError, GameSession
+from kungfu_chess.network.session import SessionManager, SessionState
+
+
+def _game():
+    """Every GameSession now takes an externally-owned SessionManager
+    (see game_session.py's own docstring on why) - this builds the pair
+    exactly the way WebSocketServer's composition root does, minus the
+    GameSession sitting on the caller's side of the shared bus (tests
+    publish MatchFoundEvent on it directly - see _match() below)."""
+    bus = EventBus()
+    return GameSession(SessionManager(bus)), bus
 
 
 def _login(game: GameSession, connection, username: str):
     game.connect(connection)
     return game.login(connection, username)
+
+
+def _match(game: GameSession, bus: EventBus,
+           white_conn, white_username: str, black_conn, black_username: str):
+    """Logs in two players (role=None each, per Step 2) and then matches
+    them exactly like MatchmakingQueue would - publishing MatchFoundEvent
+    on the same bus SessionManager subscribed to. Returns their (now
+    role-assigned) Sessions - complete_login() already returned the same
+    mutable Session objects the match mutates in place, so no re-fetch is
+    needed."""
+    white = _login(game, white_conn, white_username)
+    black = _login(game, black_conn, black_username)
+    bus.publish(MatchFoundEvent(white_username=white_username, black_username=black_username))
+    return white, black
 
 
 class _FakeEloService:
@@ -39,8 +68,8 @@ def _capture_black_king(game: GameSession, white) -> None:
 
 
 def test_legal_move_from_correct_color_is_accepted():
-    game = GameSession()
-    white = _login(game, "conn-white", "alice")
+    game, bus = _game()
+    white, _ = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
 
     reply = game.handle_message(white, protocol.encode(
         protocol.MoveRequest(request_id="1", source=Position(6, 4), destination=Position(4, 4))
@@ -50,8 +79,8 @@ def test_legal_move_from_correct_color_is_accepted():
 
 
 def test_illegal_move_returns_engines_own_reason_with_the_request_id_echoed():
-    game = GameSession()
-    white = _login(game, "conn-white", "alice")
+    game, bus = _game()
+    white, _ = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
 
     # A rook has no legal diagonal hop from its own starting cell.
     reply = game.handle_message(white, protocol.encode(
@@ -62,9 +91,8 @@ def test_illegal_move_returns_engines_own_reason_with_the_request_id_echoed():
 
 
 def test_move_on_a_piece_of_the_wrong_color_is_rejected_before_reaching_the_engine():
-    game = GameSession()
-    white = _login(game, "conn-white", "alice")
-    _login(game, "conn-black", "bob")
+    game, bus = _game()
+    white, _ = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
 
     # (1, 4) is a black pawn; the sender is White.
     reply = game.handle_message(white, protocol.encode(
@@ -75,10 +103,9 @@ def test_move_on_a_piece_of_the_wrong_color_is_rejected_before_reaching_the_engi
 
 
 def test_spectator_move_is_rejected_without_reaching_the_engine():
-    game = GameSession()
-    _login(game, "conn-white", "alice")
-    _login(game, "conn-black", "bob")
-    spectator = _login(game, "conn-spectator", "carol")
+    game, bus = _game()
+    _match(game, bus, "conn-white", "alice", "conn-black", "bob")
+    spectator = _login(game, "conn-spectator", "carol")  # game already active -> spectator
 
     reply = game.handle_message(spectator, protocol.encode(
         protocol.MoveRequest(request_id="1", source=Position(6, 4), destination=Position(4, 4))
@@ -88,9 +115,8 @@ def test_spectator_move_is_rejected_without_reaching_the_engine():
 
 
 def test_spectator_jump_is_also_rejected():
-    game = GameSession()
-    _login(game, "conn-white", "alice")
-    _login(game, "conn-black", "bob")
+    game, bus = _game()
+    _match(game, bus, "conn-white", "alice", "conn-black", "bob")
     spectator = _login(game, "conn-spectator", "carol")
 
     reply = game.handle_message(spectator, protocol.encode(
@@ -101,9 +127,8 @@ def test_spectator_jump_is_also_rejected():
 
 
 def test_two_requests_from_the_same_sender_are_each_rejected_with_their_own_request_id():
-    game = GameSession()
-    white = _login(game, "conn-white", "alice")
-    _login(game, "conn-black", "bob")
+    game, bus = _game()
+    white, _ = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
 
     # Both target a black piece from White - both must be rejected, and
     # each Error must carry back the request_id of the specific request
@@ -121,8 +146,8 @@ def test_two_requests_from_the_same_sender_are_each_rejected_with_their_own_requ
 
 
 def test_malformed_json_returns_malformed_message_with_no_request_id():
-    game = GameSession()
-    white = _login(game, "conn-white", "alice")
+    game, bus = _game()
+    white, _ = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
 
     reply = game.handle_message(white, "not json at all")
 
@@ -130,8 +155,8 @@ def test_malformed_json_returns_malformed_message_with_no_request_id():
 
 
 def test_unrecognized_type_returns_unknown_message_type():
-    game = GameSession()
-    white = _login(game, "conn-white", "alice")
+    game, bus = _game()
+    white, _ = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
 
     reply = game.handle_message(white, '{"type": "not_a_real_type"}')
 
@@ -139,8 +164,8 @@ def test_unrecognized_type_returns_unknown_message_type():
 
 
 def test_server_to_client_message_type_sent_by_a_client_is_rejected():
-    game = GameSession()
-    white = _login(game, "conn-white", "alice")
+    game, bus = _game()
+    white, _ = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
 
     reply = game.handle_message(white, protocol.encode(protocol.Error(reason="whatever")))
 
@@ -148,10 +173,10 @@ def test_server_to_client_message_type_sent_by_a_client_is_rejected():
 
 
 def test_accepted_move_triggers_the_move_completed_callback():
-    game = GameSession()
+    game, bus = _game()
     calls = []
     game.on_move_completed(lambda: calls.append(1))
-    white = _login(game, "conn-white", "alice")
+    white, _ = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
 
     game.handle_message(white, protocol.encode(
         protocol.MoveRequest(request_id="1", source=Position(6, 4), destination=Position(4, 4))
@@ -161,11 +186,10 @@ def test_accepted_move_triggers_the_move_completed_callback():
 
 
 def test_rejected_move_does_not_trigger_the_move_completed_callback():
-    game = GameSession()
+    game, bus = _game()
     calls = []
     game.on_move_completed(lambda: calls.append(1))
-    white = _login(game, "conn-white", "alice")
-    _login(game, "conn-black", "bob")
+    white, _ = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
 
     game.handle_message(white, protocol.encode(
         protocol.MoveRequest(request_id="1", source=Position(1, 4), destination=Position(3, 4))
@@ -175,8 +199,8 @@ def test_rejected_move_does_not_trigger_the_move_completed_callback():
 
 
 def test_tick_advances_the_engine_and_a_completed_motion_lands():
-    game = GameSession()
-    white = _login(game, "conn-white", "alice")
+    game, bus = _game()
+    white, _ = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
     game.handle_message(white, protocol.encode(
         protocol.MoveRequest(request_id="1", source=Position(6, 4), destination=Position(4, 4))
     ))
@@ -192,9 +216,8 @@ def test_tick_advances_the_engine_and_a_completed_motion_lands():
 
 
 def test_state_update_for_carries_the_recipients_own_color():
-    game = GameSession()
-    white = _login(game, "conn-white", "alice")
-    black = _login(game, "conn-black", "bob")
+    game, bus = _game()
+    white, black = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
     spectator = _login(game, "conn-spectator", "carol")
 
     assert game.state_update_for(white).your_color == "w"
@@ -202,30 +225,48 @@ def test_state_update_for_carries_the_recipients_own_color():
     assert game.state_update_for(spectator).your_color is None
 
 
-def test_login_assigns_role_by_login_order_not_connect_order():
-    game = GameSession()
+def test_match_found_assigns_white_by_who_was_matched_first_regardless_of_login_order():
+    """Role assignment now follows the match, not login/connect order at
+    all - MatchFoundEvent's own white_username/black_username already
+    encode who waited longer (matchmaking_queue.py); GameSession/
+    SessionManager just apply it. Logging in "second" no longer means
+    anything for role assignment the way it used to pre-Step-2."""
+    game, bus = _game()
     game.connect("conn-first-to-connect")
     game.connect("conn-second-to-connect")
-
     first_login = game.login("conn-second-to-connect", "bob")
     second_login = game.login("conn-first-to-connect", "alice")
+    assert first_login.role is None
+    assert second_login.role is None
 
-    assert first_login.color == "w"
-    assert second_login.color == "b"
+    bus.publish(MatchFoundEvent(white_username="alice", black_username="bob"))
+
+    assert second_login.color == "w"  # alice
+    assert first_login.color == "b"   # bob
 
 
 def test_state_update_for_a_pending_not_yet_logged_in_session_has_no_color():
-    game = GameSession()
+    game, _bus = _game()
     pending = game.connect("conn-1")
 
     assert pending.role is None
     assert game.state_update_for(pending).your_color is None
 
 
+def test_state_update_for_a_logged_in_session_with_no_active_game_has_no_color():
+    """The other, now-distinct way role ends up None: fully logged in,
+    just nothing to play or watch yet (decision 6) - not the same state
+    as test_state_update_for_a_pending_not_yet_logged_in_session_has_no_color."""
+    game, _bus = _game()
+    session = _login(game, "conn-1", "alice")
+
+    assert session.is_logged_in is True
+    assert game.state_update_for(session).your_color is None
+
+
 def test_state_update_for_carries_both_players_usernames_identically_to_everyone():
-    game = GameSession()
-    white = _login(game, "conn-white", "alice")
-    black = _login(game, "conn-black", "bob")
+    game, bus = _game()
+    white, black = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
     spectator = _login(game, "conn-spectator", "carol")
 
     for session in (white, black, spectator):
@@ -234,20 +275,54 @@ def test_state_update_for_carries_both_players_usernames_identically_to_everyone
         assert update.black_username == "bob"
 
 
-def test_state_update_for_usernames_are_none_before_both_players_have_logged_in():
-    game = GameSession()
+def test_state_update_for_has_no_remaining_seconds_while_everyone_is_connected():
+    game, bus = _game()
+    white, black = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
+
+    assert game.state_update_for(white).remaining_seconds is None
+    assert game.state_update_for(black).remaining_seconds is None
+
+
+def test_state_update_for_carries_remaining_seconds_once_a_player_disconnects():
+    """feature/matchmaking-disconnect, Step 3: the countdown rides on the
+    same GameStateUpdate everyone already receives (decision 8) -
+    broadcast-identical, like white_username/black_username, not
+    personalized like your_color."""
+    game, bus = _game()
+    white, black = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
+
+    game.disconnect("conn-white")
+
+    for session in (white, black):
+        update = game.state_update_for(session)
+        assert update.remaining_seconds is not None
+        assert update.remaining_seconds > 0
+
+
+def test_state_update_for_has_no_remaining_seconds_after_a_spectator_disconnects():
+    game, bus = _game()
+    white, black = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
+    _login(game, "conn-spectator", "carol")
+
+    game.disconnect("conn-spectator")
+
+    assert game.state_update_for(white).remaining_seconds is None
+
+
+def test_state_update_for_usernames_are_none_before_a_match_happens():
+    game, _bus = _game()
     white = _login(game, "conn-white", "alice")
 
     update = game.state_update_for(white)
-    assert update.white_username == "alice"
+    assert update.white_username is None
     assert update.black_username is None
 
 
 def test_king_capture_triggers_elo_update_with_both_usernames_and_winner():
     elo = _FakeEloService()
-    game = GameSession(elo_service=elo)
-    white = _login(game, "conn-white", "alice")
-    _login(game, "conn-black", "bob")
+    bus = EventBus()
+    game = GameSession(SessionManager(bus), elo_service=elo)
+    white, _ = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
 
     _capture_black_king(game, white)
 
@@ -255,21 +330,216 @@ def test_king_capture_triggers_elo_update_with_both_usernames_and_winner():
 
 
 def test_game_ending_without_an_elo_service_does_not_raise():
-    game = GameSession()  # elo_service defaults to None
-    white = _login(game, "conn-white", "alice")
-    _login(game, "conn-black", "bob")
+    game, bus = _game()  # elo_service defaults to None
+    white, _ = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
 
     _capture_black_king(game, white)  # must not raise
 
 
+def test_resign_on_disconnect_timeout_ends_the_game_for_the_opponent():
+    game, bus = _game()
+    white, black = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
+    game.disconnect("conn-white")
+
+    game.resign_on_disconnect_timeout(white)
+
+    update = game.state_update_for(black)
+    assert update.game_over is True
+    assert update.winner == "b"
+
+
+def test_resign_on_disconnect_timeout_marks_the_session_resigned():
+    game, bus = _game()
+    white, _ = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
+    game.disconnect("conn-white")
+
+    game.resign_on_disconnect_timeout(white)
+
+    assert white.state is SessionState.RESIGNED
+
+
+def test_resign_on_disconnect_timeout_updates_elo_exactly_like_a_regular_loss():
+    """Decision 5: auto-resign uses the same EloService path as any other
+    GameEndedEvent - reason differs, the ELO formula/call shape doesn't."""
+    elo = _FakeEloService()
+    bus = EventBus()
+    game = GameSession(SessionManager(bus), elo_service=elo)
+    white, _ = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
+    game.disconnect("conn-white")
+
+    game.resign_on_disconnect_timeout(white)
+
+    assert elo.calls == [("alice", "bob", "b")]
+
+
+def test_no_moves_accepted_after_resign_on_disconnect_timeout():
+    game, bus = _game()
+    white, black = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
+    game.disconnect("conn-white")
+    game.resign_on_disconnect_timeout(white)
+
+    reply = game.handle_message(black, protocol.encode(
+        protocol.MoveRequest(request_id="1", source=Position(1, 4), destination=Position(3, 4))
+    ))
+
+    assert reply == protocol.Error(reason="game_over", request_id="1")
+
+
+def test_two_near_simultaneous_disconnect_timeouts_produce_only_one_winner():
+    """Both colors disconnected and both timers eventually expire (the
+    Step 4 design discussion) - whichever call reaches
+    resign_on_disconnect_timeout() first decides the winner and the only
+    EloService call; the second is a safe no-op purely because
+    GameEngine.resign() already refuses to act once game_over is True -
+    no extra guard needed here or in SessionManager."""
+    elo = _FakeEloService()
+    bus = EventBus()
+    game = GameSession(SessionManager(bus), elo_service=elo)
+    white, black = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
+    game.disconnect("conn-white")
+    game.disconnect("conn-black")
+
+    game.resign_on_disconnect_timeout(white)  # white's timer expires first
+    game.resign_on_disconnect_timeout(black)  # black's own timer, moments later
+
+    update = game.state_update_for(white)
+    assert update.winner == "b"  # decided by the first call only
+    assert elo.calls == [("alice", "bob", "b")]  # never called a second time
+    assert white.state is SessionState.RESIGNED
+    assert black.state is SessionState.RESIGNED  # still marked, even though ignored by the engine
+
+
 def test_elo_service_is_not_called_if_a_color_never_logged_in():
-    """Nobody logged in as Black (e.g. a solo chess-logic test) - the
+    """Nobody ever became Black - simulated here by matching alice
+    against a black_username that was never logged in. See
+    session.py's _handle_match_found: a missing session on one side of a
+    match is skipped rather than an error (the same defensive path a
+    genuinely disconnected-while-queued player would hit - Step 3+). The
     board still has a black king to capture, but there's no black
     username to rate, so record_game_result must never be called."""
     elo = _FakeEloService()
-    game = GameSession(elo_service=elo)
+    bus = EventBus()
+    game = GameSession(SessionManager(bus), elo_service=elo)
     white = _login(game, "conn-white", "alice")
+    bus.publish(MatchFoundEvent(white_username="alice", black_username="nobody"))
 
     _capture_black_king(game, white)
 
     assert elo.calls == []
+
+
+# ---- reconnect (feature/matchmaking-disconnect, Step 5) ---------------
+
+def test_reconnecting_returns_the_same_role_and_color():
+    game, bus = _game()
+    white, _ = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
+    game.disconnect("conn-white")
+
+    game.connect("conn-white-new")  # what ws_server.py's _handle_connection does before login, every time
+    reconnected = game.login("conn-white-new", "alice")
+
+    assert reconnected is white  # same Session object, seat preserved
+    assert reconnected.role == white.role
+    assert reconnected.color == "w"
+    assert reconnected.state is SessionState.ACTIVE
+
+
+def test_reconnecting_wakes_the_pending_disconnect_timer():
+    game, bus = _game()
+    white, _ = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
+    game.disconnect("conn-white")
+
+    game.connect("conn-white-new")
+    game.login("conn-white-new", "alice")
+
+    assert white.reconnected.is_set()
+
+
+def test_reconnecting_gives_the_returning_client_the_full_snapshot():
+    """Item ב: no new mechanism needed - state_update_for() already wraps
+    a full snapshot, and works identically for a reconnected Session."""
+    game, bus = _game()
+    white, black = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
+    # A move happens while white is disconnected - black moves a pawn.
+    game.disconnect("conn-white")
+    game.handle_message(black, protocol.encode(
+        protocol.MoveRequest(request_id="1", source=Position(1, 4), destination=Position(3, 4))
+    ))
+    game.tick(5000)
+
+    game.connect("conn-white-new")
+    reconnected = game.login("conn-white-new", "alice")
+
+    update = game.state_update_for(reconnected)
+    assert any(p.row == 3 and p.col == 4 and p.kind == "P" for p in update.pieces)
+
+
+def test_reconnect_after_the_game_already_ended_by_auto_resign_is_rejected():
+    """The straightforward case from item ג: the disconnect timer already
+    fired (auto-resign, Step 4) before this reconnect attempt arrives -
+    no race, just late."""
+    game, bus = _game()
+    white, _ = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
+    game.disconnect("conn-white")
+    game.resign_on_disconnect_timeout(white)  # game_over is now True
+
+    game.connect("conn-white-new")
+    with pytest.raises(GameAlreadyEndedError) as exc_info:
+        game.login("conn-white-new", "alice")
+    assert exc_info.value.reason == "game_already_ended"
+
+
+def test_reconnect_after_the_game_ended_by_a_king_capture_is_also_rejected():
+    """A DISCONNECTED (not RESIGNED) seat whose game ended for a
+    completely unrelated reason (a king capture landing while this
+    player happened to be disconnected) - game_over is still the fact
+    that matters, not this Session's own state."""
+    game, bus = _game()
+    white, black = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
+    game.disconnect("conn-black")
+    _capture_black_king(game, white)  # game_over True, black's Session still just DISCONNECTED
+
+    game.connect("conn-black-new")
+    with pytest.raises(GameAlreadyEndedError) as exc_info:
+        game.login("conn-black-new", "bob")
+    assert exc_info.value.reason == "game_already_ended"
+
+
+def test_resign_on_disconnect_timeout_is_a_no_op_if_already_reconnected():
+    """The other half of the Step 5 race (item ג, verified in code, not
+    assumed - see game_session.py's own docstring): a stale
+    ReconnectTimeout firing after login() already reattached the
+    connection in the asyncio.wait_for() cancellation gap must not
+    resign a player who is, by the time this runs, already back."""
+    elo = _FakeEloService()
+    bus = EventBus()
+    game = GameSession(SessionManager(bus), elo_service=elo)
+    white, _ = _match(game, bus, "conn-white", "alice", "conn-black", "bob")
+    game.disconnect("conn-white")
+    game.connect("conn-white-new")
+    game.login("conn-white-new", "alice")  # reconnected first, before the stale timer fires
+
+    game.resign_on_disconnect_timeout(white)  # the timer that "lost" the race
+
+    update = game.state_update_for(white)
+    assert update.game_over is False
+    assert white.state is SessionState.ACTIVE  # unchanged by the stale timeout
+    assert elo.calls == []
+
+
+def test_login_of_a_brand_new_username_is_unaffected_by_reconnect_handling():
+    game, bus = _game()
+    fresh = _login(game, "conn-1", "carol")
+    assert fresh.role is None
+    assert fresh.is_logged_in is True
+
+
+def test_login_of_a_still_active_username_still_rejects_as_already_logged_in():
+    from kungfu_chess.network.session import UsernameAlreadyLoggedInError
+    game, bus = _game()
+    _match(game, bus, "conn-white", "alice", "conn-black", "bob")
+
+    game.connect("conn-white-2")
+    with pytest.raises(UsernameAlreadyLoggedInError) as exc_info:
+        game.login("conn-white-2", "alice")  # alice is still ACTIVE on conn-white
+    assert exc_info.value.reason == "already_logged_in"

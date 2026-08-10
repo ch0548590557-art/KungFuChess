@@ -68,12 +68,40 @@ silently swallowed - see _handle_game_ended's own guard comments.
 WHY connect()/login() ARE SEPARATE (feature/home-screen-basic-login,
 Step 3):
 connect() just registers a socket (SessionManager.register_connection -
-no role yet); login() is the only thing that ever assigns one
+no role yet); login() is the only thing that ever completes it
 (SessionManager.complete_login), called once WebSocketServer's
 login_gate.await_login() actually receives a LoginRequest. GameSession
 itself does no waiting/timeout logic - that's a transport-timing concern
 login_gate.py owns; GameSession only ever answers "given a connection
 and a username, who are they now."
+
+WHY GameSession NO LONGER BUILDS ITS OWN SessionManager (feature/
+matchmaking-disconnect, Step 2):
+Roles used to only ever change at login time, so GameSession owning a
+private SessionManager cost nothing - nobody outside GameSession needed
+to see or affect it. That stopped being true the moment role assignment
+moved to MatchFoundEvent (see session.py's own module docstring):
+SessionManager now has to subscribe to that event on a Bus that exists
+independently of any one GameSession (a match can be found - and *must*
+be answerable - even though this branch still only ever runs a single,
+eagerly-created GameSession for the whole process). SessionManager is
+therefore built once, above both GameSession and MatchmakingQueue, and
+handed in here - GameSession keeps its connect()/login()/disconnect()
+facade unchanged, it simply no longer owns what's behind it.
+
+WHY resign_on_disconnect_timeout() LIVES ON GameSession, NOT
+SessionManager OR ws_server.py DIRECTLY (feature/matchmaking-disconnect,
+Step 4):
+Auto-resign needs both "mark this Session RESIGNED" (a SessionManager
+fact) and "end the game in the opponent's favor" (a GameEngine fact,
+via resign() - see game_engine.py) done together for the one timed-out
+player - exactly the same shape as _handle_game_ended above needing both
+SessionManager.username_for_role() and the chess result to call
+EloService. GameSession is already the one class allowed to know both
+Session and GameEngine; ws_server.py only ever needs to know "the
+disconnect timer for this session expired", the same way it already
+doesn't know anything about SessionManager/GameEngine internals for any
+other message it forwards.
 """
 
 from typing import Callable, Optional
@@ -84,9 +112,24 @@ from kungfu_chess.elo.elo_service import EloService
 from kungfu_chess.engine.game_engine import GameEngine
 from kungfu_chess.io.board_parser import BoardParser
 from kungfu_chess.network import protocol
-from kungfu_chess.network.session import PlayerRole, Session, SessionManager
+from kungfu_chess.network.session import PlayerRole, Session, SessionManager, SessionState
 
 TICK_MS = 50
+
+
+class GameAlreadyEndedError(Exception):
+    """Raised by login() when `username` names a reconnect_candidate()
+    (see session.py) but the game has already ended by the time the
+    login arrives - see login()'s own docstring for the two ways that
+    can happen. Deliberately a different reason from
+    UsernameAlreadyLoggedInError: nobody is currently online as this
+    username (that error would be misleading), the seat itself is just
+    gone - there is nothing left to reconnect to."""
+
+    def __init__(self, username: str):
+        super().__init__(f"game already ended, no seat to reconnect to: {username}")
+        self.username = username
+        self.reason = "game_already_ended"
 
 # Mirrors app.py's _run_interactive_window() starting position. Kept as
 # its own literal here (rather than importing from app.py) so the
@@ -106,9 +149,9 @@ STARTING_POSITION = [
 
 
 class GameSession:
-    def __init__(self, elo_service: Optional[EloService] = None):
+    def __init__(self, sessions: SessionManager, elo_service: Optional[EloService] = None):
         board = BoardParser().parse(STARTING_POSITION)
-        self._sessions = SessionManager()
+        self._sessions = sessions
         self._bus = EventBus()
         self._engine = GameEngine(board, bus=self._bus)
         self._elo_service = elo_service
@@ -120,10 +163,83 @@ class GameSession:
         return self._sessions.register_connection(connection)
 
     def login(self, connection, username: str) -> Session:
+        """A LoginRequest/RegisterRequest just resolved to `username` on
+        `connection` - the normal login path, unchanged for a brand-new
+        or currently-ACTIVE username (see reconnect_candidate()'s own
+        docstring on why those fall straight through to
+        complete_login()). When `username` names a non-ACTIVE WHITE/BLACK
+        seat instead (feature/matchmaking-disconnect, Step 5), this is a
+        reconnect attempt - handled here rather than in SessionManager
+        because completing it safely needs a fact only this class can
+        see: is the game already over. Several different, independently
+        real ways it can be by the time this runs - all must reject
+        cleanly rather than hand back a seat in a finished game:
+          1. The seat is RESIGNED - its own disconnect timer already
+             expired (Step 4) - which, by construction, already means
+             game_over is True (see reconnect_candidate()'s own note).
+          2. The seat is DISCONNECTED, but the *opponent's* disconnect
+             timer already expired and ended the game first - this
+             player was never told, since they were offline.
+          3. The genuine race this branch's Step 4 design discussion
+             already flagged: *this* player's own disconnect timer
+             expires in the brief asyncio.wait_for() cancellation gap
+             around the same moment this reconnect arrives - see
+             resign_on_disconnect_timeout()'s own guard for the other
+             half of this (the timer noticing a reconnect beat it, not
+             this method noticing a resign beat it).
+        Checking self._engine.game_over here, synchronously and with
+        nothing awaited before reconnect() actually reattaches the
+        connection, is what makes case 3 safe: nothing else can run
+        between this check and reconnect() to invalidate it (see
+        session.py's own note on why no Lock is needed for the same
+        reason)."""
+        candidate = self._sessions.reconnect_candidate(username)
+        if candidate is not None:
+            if self._engine.game_over:
+                raise GameAlreadyEndedError(username)
+            return self._sessions.reconnect(connection, candidate)
         return self._sessions.complete_login(connection, username)
 
-    def disconnect(self, connection) -> None:
-        self._sessions.unregister_connection(connection)
+    def resign_on_disconnect_timeout(self, session: Session) -> None:
+        """Called by ws_server.py's disconnect-timer task (Step 3) the
+        moment ReconnectTimeout actually fires for `session` - guard 7b
+        (see session.py's unregister_connection()) guarantees `session`
+        is still the same WHITE/BLACK player whose countdown started, so
+        session.color is never None here.
+
+        WHY THIS CHECKS session.state BEFORE DOING ANYTHING (feature/
+        matchmaking-disconnect, Step 5):
+        ReconnectTimeout firing does not, on its own, guarantee no
+        reconnect happened - asyncio.wait_for()'s internal cancel-then-
+        raise sequence takes an extra event-loop tick (verified by
+        tracing it, not assumed - see this branch's Step 5 design notes),
+        so login()'s reconnect() can run and flip `session` back to
+        ACTIVE in the gap between this timer's timeout being decided and
+        this handler actually running. A stale ReconnectTimeout must not
+        resign a player who is, by the time this line runs, already back
+        - checking state here (not just relying on GameEngine.resign()'s
+        own game_over guard, which only catches the *other* color already
+        having ended the game, see Step 4) is what catches that.
+
+        Once past that guard, marks the session RESIGNED (SessionManager.
+        mark_resigned - the first producer of that state, Step 4) and
+        hands off to GameEngine.resign(), which already owns "end the
+        game in the opponent's favor" and is what makes a second,
+        near-simultaneous call - the other color's own timer expiring a
+        moment later - a safe no-op rather than a second GameEndedEvent
+        (see resign()'s own docstring)."""
+        if session.state is not SessionState.DISCONNECTED:
+            return  # reconnected in the gap - see the docstring above
+        self._sessions.mark_resigned(session)
+        self._engine.resign(session.color, reason="opponent_disconnected")
+
+    def disconnect(self, connection) -> Optional[Session]:
+        """Returns the Session if - and only if - this disconnect just
+        started a disconnect countdown for an active WHITE/BLACK player
+        (see SessionManager.unregister_connection() - the return value
+        already embeds guard 7b, so ws_server.py doesn't need its own
+        "is a timer already running" check before starting one)."""
+        return self._sessions.unregister_connection(connection)
 
     def on_move_completed(self, callback: Callable[[], None]) -> None:
         self._on_move_completed = callback
@@ -203,4 +319,5 @@ class GameSession:
             your_color=session.color,
             white_username=self._sessions.username_for_role(PlayerRole.WHITE),
             black_username=self._sessions.username_for_role(PlayerRole.BLACK),
+            remaining_seconds=self._sessions.remaining_disconnect_seconds(),
         )

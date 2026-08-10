@@ -62,3 +62,22 @@ class GameEndedEvent:
     game_engine.py for why resignation isn't implemented yet)."""
     winner_color: str
     reason: str
+
+
+@dataclass
+class MatchFoundEvent:
+    """Published once by MatchmakingQueue (matchmaking/matchmaking_queue.py)
+    the moment it pairs two waiting players - the queue's only way of
+    talking to whatever assigns roles/starts a game (SessionManager, Step 2
+    of feature/matchmaking-disconnect), since the queue is deliberately kept
+    ignorant of SessionManager/GameSession/networking (same reasoning as
+    MoveCompletedEvent/GameEndedEvent above: publisher and subscriber only
+    ever need to agree on this shape, not on each other's concrete classes).
+
+    white_username/black_username are already color-assigned by the queue
+    itself (whoever had been waiting longer becomes White - see
+    matchmaking_queue.py's module docstring), not raw "player_a/player_b" -
+    there is nothing left for a subscriber to decide about who plays which
+    color, only who to hand those colors to."""
+    white_username: str
+    black_username: str
