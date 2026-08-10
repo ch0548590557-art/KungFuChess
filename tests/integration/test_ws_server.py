@@ -131,6 +131,42 @@ def test_play_request_matches_two_players_in_elo_range_white_is_whoever_waited_l
     asyncio.run(scenario())
 
 
+def test_disconnect_while_still_queued_does_not_leave_a_ghost_matchmaking_entry():
+    """Bugfix found during Step 6 live verification (feature/
+    matchmaking-disconnect): a connection dropping while its own
+    PlayRequest is still queued - sent, never matched, never explicitly
+    cancelled - must not leave a stale MatchmakingQueue entry that a
+    later, unrelated PlayRequest could match against. Before the fix,
+    bob would match against alice's abandoned entry, get a color with
+    white_username=None (nobody left to assign white to), and carol
+    would be left waiting alone - this test fails via a _recv_until
+    timeout on carol under the old behavior."""
+    async def scenario():
+        server, uri = await _start()
+        try:
+            async with websockets.connect(uri) as ghost:
+                await _welcome(ghost, "alice")
+                await ghost.send(protocol.encode(protocol.PlayRequest()))
+                await asyncio.sleep(0.2)  # let the PlayRequest actually reach the queue
+            # ghost's connection is now closed - alice was queued, never matched.
+
+            async with websockets.connect(uri) as second, \
+                    websockets.connect(uri) as third:
+                await _welcome(second, "bob")
+                await _welcome(third, "carol")
+
+                second_update, third_update = await _match(second, third)
+
+                assert second_update.white_username == "bob"
+                assert second_update.black_username == "carol"
+                assert third_update.white_username == "bob"
+                assert third_update.black_username == "carol"
+        finally:
+            await _stop(server)
+
+    asyncio.run(scenario())
+
+
 def test_play_request_order_determines_white_not_login_order():
     """Role assignment no longer follows login order at all (feature/
     matchmaking-disconnect, Step 2 - see session.py) - only queue-wait

@@ -125,6 +125,28 @@ once (this module decodes first and forwards the original `raw` to
 GameSession unchanged when it isn't a PlayRequest/CancelPlayRequest, so
 GameSession's own malformed/unknown-type handling is untouched).
 
+WHY _handle_connection()'s finally BLOCK CANCELS THE MATCHMAKING QUEUE
+ENTRY TOO, NOT JUST GameSession.disconnect() (feature/matchmaking-
+disconnect, bugfix found during Step 6 live verification):
+A connection can drop while its own PlayRequest is still queued - sent,
+not yet matched, never explicitly cancelled. SessionManager.
+unregister_connection() only ever touches its own bookkeeping (Session
+objects, _queued_usernames); it has no reference to MatchmakingQueue at
+all (by design - see session.py's own module docstring), so on its own
+it cannot remove the matching MatchmakingQueue._queue entry. Left alone,
+that entry stays live until its own 60s internal timeout, which is
+plenty of time for a *different*, still-connected player's PlayRequest
+to legitimately find it via _find_opponent() and get "matched" against a
+username with no Session left at all - session.py's own
+_handle_match_found() then finds nothing to assign that color to and
+skips it silently (the same defensive branch that normally covers a
+narrower, already-anticipated race), leaving the real player stuck in a
+permanently one-sided game with an opponent slot nothing can ever fill.
+Calling self._matchmaking.cancel(username) here - unconditionally and
+idempotently, exactly like _handle_cancel_play_request() already does
+for an explicit CancelPlayRequest - closes that gap the same way for
+every disconnect path, not just the explicit-cancel one.
+
 WHY EVERY CONNECT/DISCONNECT IS PRINTED:
 Discovered while manually playtesting (2026-07-22): a human juggling
 several terminal windows has no other way to tell how many clients are
@@ -288,6 +310,23 @@ class WebSocketServer:
             disconnected_session = self._game.disconnect(websocket)
             logged_in_session = self._connections.pop(websocket, None)
             if logged_in_session is not None:
+                # A connection can drop while its own PlayRequest is
+                # still queued (sent, not yet matched, not yet
+                # explicitly cancelled) - cancel()/end_queueing() here,
+                # unconditionally and idempotently, exactly like
+                # _handle_cancel_play_request() already does for an
+                # explicit CancelPlayRequest (see its own docstring on
+                # why both calls are always safe even when not queued).
+                # Without this, a disconnected-while-queued username
+                # stays a live "ghost" entry in MatchmakingQueue's own
+                # queue - a later real PlayRequest can still match
+                # against it, and _handle_match_found (session.py) finds
+                # no Session left to assign that color to, silently
+                # producing a permanently one-sided game (verified live -
+                # feature/matchmaking-disconnect, Step 6 - before this
+                # fix; see this branch's Step 6 testing notes).
+                self._matchmaking.cancel(logged_in_session.username)
+                self._sessions.end_queueing(logged_in_session.username)
                 print(f"[disconnect] username={logged_in_session.username} "
                       f"role={_role_name(logged_in_session.role)} color={logged_in_session.color} "
                       f"connections={len(self._connections)}")
