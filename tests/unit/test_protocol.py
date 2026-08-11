@@ -3,6 +3,7 @@ import pytest
 from kungfu_chess.model.position import Position
 from kungfu_chess.network import protocol
 from kungfu_chess.network.protocol import (
+    CancelPlayRequest,
     CaptureInfo,
     CompletedMove,
     Error,
@@ -12,6 +13,7 @@ from kungfu_chess.network.protocol import (
     MotionInfo,
     MoveRequest,
     PieceInfo,
+    PlayRequest,
     RegisterRequest,
 )
 
@@ -33,6 +35,16 @@ def test_login_request_round_trip():
 
 def test_register_request_round_trip():
     message = RegisterRequest(username="chani", password="hunter2")
+    assert protocol.decode(protocol.encode(message)) == message
+
+
+def test_play_request_round_trip():
+    message = PlayRequest()
+    assert protocol.decode(protocol.encode(message)) == message
+
+
+def test_cancel_play_request_round_trip():
+    message = CancelPlayRequest()
     assert protocol.decode(protocol.encode(message)) == message
 
 
@@ -62,6 +74,7 @@ def test_game_state_update_round_trip_with_full_fields():
         your_color="w",
         white_username="alice",
         black_username="bob",
+        remaining_seconds=14,
     )
     assert protocol.decode(protocol.encode(message)) == message
 
@@ -71,6 +84,14 @@ def test_game_state_update_round_trip_with_empty_lists():
         board_width=8, board_height=8, pieces=[], game_over=False,
     )
     assert protocol.decode(protocol.encode(message)) == message
+    assert message.remaining_seconds is None
+
+
+def test_game_state_update_remaining_seconds_defaults_to_none_when_absent_from_the_payload():
+    message = protocol.decode(
+        '{"type": "game_state_update", "board_width": 8, "board_height": 8, "pieces": [], "game_over": false}'
+    )
+    assert message.remaining_seconds is None
 
 
 def test_decode_unknown_type_raises():
@@ -93,6 +114,7 @@ class _FakeSnapshot:
 def test_game_state_update_from_snapshot_converts_all_fields():
     update = GameStateUpdate.from_snapshot(
         _FakeSnapshot(), your_color="b", white_username="alice", black_username="bob",
+        remaining_seconds=7,
     )
 
     assert update.pieces == [PieceInfo(kind="K", color="w", row=7, col=4, state="IDLE")]
@@ -105,10 +127,12 @@ def test_game_state_update_from_snapshot_converts_all_fields():
     assert update.your_color == "b"
     assert update.white_username == "alice"
     assert update.black_username == "bob"
+    assert update.remaining_seconds == 7
 
 
-def test_game_state_update_from_snapshot_defaults_usernames_to_none():
+def test_game_state_update_from_snapshot_defaults_usernames_and_remaining_seconds_to_none():
     update = GameStateUpdate.from_snapshot(_FakeSnapshot())
 
     assert update.white_username is None
     assert update.black_username is None
+    assert update.remaining_seconds is None

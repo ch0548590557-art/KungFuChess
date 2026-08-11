@@ -47,11 +47,37 @@ game_over flipping to True except by polling GameSnapshot every tick -
 publishing an event the moment it happens lets a subscriber (GameSession,
 which knows the players' usernames GameEngine deliberately doesn't - see
 Section 8) react exactly once, right when it matters, instead of diffing
-snapshots. reason is currently always "king_captured" because that's the
-only way GameEngine can end a game today - there is no resignation
-mechanism in this codebase; if one is added later (a different branch),
-it would publish the same event with a different reason string, not a
-new event type.
+snapshots. reason was, before resign() existed, always "king_captured"
+because that was the only way GameEngine could end a game - see resign()
+below for the second way, added exactly as this note predicted: the same
+event type, a different reason string.
+
+WHY resign() REUSES GameState.end_game()/GameEndedEvent RATHER THAN A
+SEPARATE "GAME ENDED BY RESIGNATION" PATH (feature/matchmaking-disconnect,
+Step 4):
+A resignation and a king capture are both just "the game is over, here is
+who won" from the point of view of everything downstream (request_move's
+own game_over guard, GameSession's GameEndedEvent subscription, EloService)
+- none of them need to know *why*. Calling the same end_game()/publish()
+this class already uses for king_captured, with reason="opponent_disconnected"
+instead, means auto-resign (Step 4's driver: a disconnect timer expiring -
+see game_session.py) gets every one of those consumers for free instead of
+teaching each one a second "game ended" shape.
+
+WHY resign() GUARDS ON game_over INSTEAD OF ASSUMING IT'S ONLY EVER CALLED
+ONCE (Step 4):
+Two disconnect timers - one per color - can each independently expire
+without ever being told the other one already did (see session.py's own
+note on why remaining_disconnect_seconds() has to handle both colors
+disconnected at once). The guard is what makes calling resign() a second
+time, for the side that lost the race, a safe no-op instead of a second
+GameEndedEvent overwriting the first winner - and it works with no lock:
+resign() does no `await`/yielding of any kind between the game_over check
+and end_game()/publish(), and everything that can call it runs on the one
+asyncio event loop (same single-threaded reasoning session.py's own
+disconnect-timer note already establishes), so two calls can never
+actually interleave - the second one's guard always sees the first one's
+result, never a half-applied one.
 
 WHY MoveResult IS ITS OWN DATACLASS (mirrors MoveValidation's rationale):
 Same reasoning as RuleEngine.MoveValidation: a named result type reads
@@ -115,6 +141,17 @@ class GameEngine:
 
     # ---- public command boundary --------------------------------------
 
+    @property
+    def game_over(self) -> bool:
+        """Cheap read of the one GameState fact callers outside this
+        class occasionally need before deciding whether to act at all
+        (feature/matchmaking-disconnect, Step 5: GameSession.login()
+        checks this before allowing a reconnect - see its own docstring)
+        - deliberately not routed through snapshot(), which walks every
+        piece on the board to build a whole GameSnapshot just to answer
+        a single bool."""
+        return self._state.game_over
+
     def request_move(self, source: Position, destination: Position) -> MoveResult:
         if self._state.game_over:
             return MoveResult(False, "game_over")
@@ -165,6 +202,19 @@ class GameEngine:
         if self._bus is not None:
             self._bus.publish(MoveCompletedEvent(source=source, destination=source, is_jump=True))
         return MoveResult(True, "ok")
+
+    def resign(self, resigning_color: str, reason: str) -> None:
+        """Ends the game immediately in favor of whichever color is not
+        `resigning_color` - see the module docstring above on why this
+        reuses end_game()/GameEndedEvent rather than a separate path, and
+        why the game_over guard below is what keeps this safe to call
+        twice (once per disconnected color) with no lock."""
+        if self._state.game_over:
+            return
+        winner_color = 'b' if resigning_color == 'w' else 'w'
+        self._state.end_game(winner_color=winner_color)
+        if self._bus is not None:
+            self._bus.publish(GameEndedEvent(winner_color=winner_color, reason=reason))
 
     def wait(self, ms: int) -> None:
         self._clock_ms += ms

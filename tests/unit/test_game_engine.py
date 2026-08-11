@@ -85,6 +85,19 @@ def test_same_piece_still_cannot_move_twice_even_in_extra_route():
     assert result.reason == "motion_in_progress"
 
 
+def test_game_over_property_is_false_before_any_ending():
+    engine = build_engine(make_piece(1, 'w', 'K', 0, 0), make_piece(2, 'b', 'K', 3, 3))
+    assert engine.game_over is False
+
+
+def test_game_over_property_is_true_after_resign():
+    """feature/matchmaking-disconnect, Step 5: GameSession.login() reads
+    this cheap property (not snapshot()) before allowing a reconnect."""
+    engine = build_engine(make_piece(1, 'w', 'K', 0, 0), make_piece(2, 'b', 'K', 3, 3))
+    engine.resign('w', reason="opponent_disconnected")
+    assert engine.game_over is True
+
+
 def test_king_capture_sets_game_over():
     engine = build_engine(
         make_piece(1, 'w', 'R', 0, 0),
@@ -136,6 +149,68 @@ def test_command_after_game_over_is_rejected_and_board_unchanged():
     engine.request_move(Position(0, 0), Position(0, 3))
     engine.wait(3000)  # king captured, game over
     result = engine.request_move(Position(2, 2), Position(0, 1))
+    assert result.is_accepted is False
+    assert result.reason == "game_over"
+
+
+# ---- resign() (feature/matchmaking-disconnect, Step 4) ---------------
+
+def test_resign_sets_game_over_with_the_opposing_color_as_winner():
+    engine = build_engine(make_piece(1, 'w', 'K', 0, 0), make_piece(2, 'b', 'K', 3, 3))
+
+    engine.resign('w', reason="opponent_disconnected")
+
+    snap = engine.snapshot()
+    assert snap.game_over is True
+    assert snap.winner == 'b'
+
+
+def test_resign_publishes_game_ended_event_with_the_given_reason():
+    bus = EventBus()
+    received = []
+    bus.subscribe(GameEndedEvent, received.append)
+    board = Board(4, 4)
+    board.add_piece(make_piece(1, 'w', 'K', 0, 0))
+    board.add_piece(make_piece(2, 'b', 'K', 3, 3))
+    engine = GameEngine(board, arbiter=RealTimeArbiter(), bus=bus)
+
+    engine.resign('b', reason="opponent_disconnected")
+
+    assert received == [GameEndedEvent(winner_color='w', reason="opponent_disconnected")]
+
+
+def test_resign_after_game_already_over_is_a_no_op():
+    """Guards against two disconnect timers (one per color) each calling
+    resign() independently - see game_engine.py's own docstring on why
+    this is what makes a near-simultaneous double-disconnect safe with no
+    lock: whichever call reaches here first decides the winner, the
+    second is silently ignored rather than overwriting it."""
+    bus = EventBus()
+    received = []
+    bus.subscribe(GameEndedEvent, received.append)
+    board = Board(4, 4)
+    board.add_piece(make_piece(1, 'w', 'K', 0, 0))
+    board.add_piece(make_piece(2, 'b', 'K', 3, 3))
+    engine = GameEngine(board, arbiter=RealTimeArbiter(), bus=bus)
+
+    engine.resign('w', reason="opponent_disconnected")  # black wins first
+    engine.resign('b', reason="opponent_disconnected")  # black's own timer, too late
+
+    snap = engine.snapshot()
+    assert snap.winner == 'b'  # unchanged by the second call
+    assert received == [GameEndedEvent(winner_color='b', reason="opponent_disconnected")]
+
+
+def test_command_after_resign_is_rejected():
+    engine = build_engine(
+        make_piece(1, 'w', 'K', 0, 0),
+        make_piece(2, 'b', 'K', 3, 3),
+        make_piece(3, 'b', 'N', 2, 2),
+    )
+
+    engine.resign('w', reason="opponent_disconnected")
+    result = engine.request_move(Position(2, 2), Position(0, 1))
+
     assert result.is_accepted is False
     assert result.reason == "game_over"
 

@@ -172,6 +172,22 @@ class ClientCore:
         ))
         return request_id
 
+    async def send_play_request(self) -> None:
+        """Enters matchmaking (feature/matchmaking-disconnect, Step 2) -
+        no request_id, no payload: like MoveRequest/JumpRequest carry no
+        role/color, PlayRequest carries no rating (the server looks that
+        up itself - see session.py). A match (or a matchmaking_timeout)
+        is reported later, asynchronously, not as a direct reply to this
+        call - my_color simply changes once the next GameStateUpdate
+        broadcast reflects it."""
+        await self._connection.send(protocol.encode(protocol.PlayRequest()))
+
+    async def send_cancel_play_request(self) -> None:
+        """Leaves matchmaking. Safe to call even if not currently queued
+        (see protocol.py's CancelPlayRequest docstring) - ClientCore does
+        not track queued-state itself, so it never needs to guard this."""
+        await self._connection.send(protocol.encode(protocol.CancelPlayRequest()))
+
     def _new_request_id(self) -> str:
         self._next_request_id += 1
         return str(self._next_request_id)
